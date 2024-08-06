@@ -6,7 +6,8 @@
 data/ENSEMBLE_NR/
 data/ENSEMBLE_UR/
 data/woa2018/
-
+data/data/
+data/data.zip
 # Ignore specific files in the data folder
 data/ENV.RData
 data/ENVfull.RData
