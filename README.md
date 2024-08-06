@@ -28,5 +28,6 @@ This repo contains a sample data how to prepare the required files to run SDM mo
 
 If you need to set up the environment on a different machine or restore it to a previous state, use the restore function:
 ```r
+install.packages("renv")
 renv::restore()
 ```
