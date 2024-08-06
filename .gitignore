@@ -1,0 +1,21 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+# Ignore directories in the data folder
+data/ENSEMBLE_NR/
+data/ENSEMBLE_UR/
+data/woa2018/
+
+# Ignore specific files in the data folder
+data/ENV.RData
+data/ENVfull.RData
+data/EPI_MESO_BATHY_BOUNDARY.csv
+data/GEO.csv
+data/GFDL-ESM4_ssp126_EQ720_REFPERIOD_1996_2015.RDATA
+data/grid.csv
+data/map.RData
+data/META_all.csv
+data/META_zoop.csv
+data/mesopel_labels_prov.csv
+data/sampling-effort.csv

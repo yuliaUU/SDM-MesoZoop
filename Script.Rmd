@@ -1,0 +1,863 @@
+---
+title: "Script to reproduce paper results"
+output: html_document
+date: '2022-07-15'
+---
+
+```{r lib, message=FALSE, warning=FALSE, paged.print=FALSE}
+#library(foreach)
+#library(doParallel)
+library(readr)
+library(dplyr)
+library(ggpubr)
+library(glue)
+library(latex2exp)
+library(ggnewscale)
+library(sp)
+library(scales)
+library(pROC)
+library(janitor)
+library(tidyr)
+library(dplyr)
+library(tidyverse)
+library(sf)      # for spTransform() & project()
+library(data.table)
+library(biscale)
+library(cowplot)
+library(ggpubr)
+library(janitor)
+library(flextable)
+library(patchwork)
+load("data/map.RData")
+# custom functions
+`%notin%` <- Negate(`%in%`)
+select=dplyr::select
+rename=dplyr::rename
+filter=dplyr::filter
+summarize=dplyr::summarize
+count=dplyr::count
+drop_na=tidyr::drop_na
+group_by=dplyr::group_by
+mutate=dplyr::mutate
+```
+```{r}
+# 
+GEO <- read_csv("data/GEO.csv",show_col_types=FALSE)
+grid=GEO[, c("longitude","latitude","ProvId")]
+META_zoop <- read_csv("data/META_zoop.csv",show_col_types=FALSE)
+# files with Native Range that can do SDM
+files <- META_zoop |>  filter(ModelStatus =="SDM",  Env %notin% c("EPI", "NEITHER")) |> pull(SPID)
+# __ give the PORJ.4 string for Eckert IV projection
+PROJ <- "+proj=eck4 +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs" 
+n_phylum <- META_zoop |>  filter(ModelStatus=="SDM", Env %in% c("MESO","BOTH")) |> tabyl(phylum) |> mutate(phylum_label= glue::glue("{phylum} (n={n})")) |> select(phylum, phylum_label) |> 
+  rbind(data.frame(phylum="All species", phylum_label= glue::glue("All species (n={length(files)})")))
+```
+
+## Functions
+
+```{r nice-theme}
+extrafont::loadfonts(device = "all")
+source(here::here("fun/theme_Publication.R"))
+```
+
+```{r plt-map-fun}
+palette1=c("#313695","#4575b4","#74add1","#abd9e9","#e0f3f8","#ffffbf","#fee090","#fdae61","#f46d43","#d73027","#a50026")
+palette2=RColorBrewer::brewer.pal(11, 'Spectral')[11:1]
+plot.map<- function(NE_places.df, continious=TRUE,alpha = 0.5, size = 1){
+  names(NE_places.df) <- c("lon", "lat","PROB")
+# Create an sf object from the data frame
+sf_object <- st_as_sf(NE_places.df, coords = c("lon", "lat"), crs = 4326)
+# Transform the coordinates to the desired CRS
+transformed_sf <- st_transform(sf_object, crs = PROJ)
+# Extract the transformed coordinates and convert them to a data frame
+NE_places.df.prj <- as.data.frame(st_coordinates(transformed_sf))
+# Rename the columns
+names(NE_places.df.prj)[1:2] <- c("X.prj", "Y.prj")
+# transform to data.table (easier to work with)
+NE_places.dt.prj <- data.table(NE_places.df.prj,NE_places.df)
+
+plt<- ggplot() +
+  # add locations (points); add opacity with "alpha" argument
+  geom_point(data = NE_places.dt.prj, 
+             aes(x = X.prj, y = Y.prj, colour = PROB),size = size, 
+             alpha = alpha) +
+  geom_polygon(data = NE_countries.prj, 
+               aes(long,lat, group = group), 
+               colour = "gray70", fill = "gray90", size = .25) +
+  # add projected bounding box
+  geom_polygon(data = NE_box.prj, 
+               aes(x = long, y = lat), 
+               colour = "black", fill = "transparent", size = .25) +
+  # add graticules
+  geom_path(data = NE_graticules.prj, 
+            aes(long, lat, group = group), 
+            linetype = "dotted", colour = "grey50", size = .25) +
+  # add graticule labels - latitude and longitude
+  geom_text(data = lbl.Y.prj, # latitude
+            aes(x = X.prj, y = Y.prj, label = lbl), 
+            colour = "grey50", size = 2) +
+  geom_text(data = lbl.X.prj, # latitude
+            aes(x = X.prj, y = Y.prj*1.04, label = lbl), 
+            colour = "grey50", size = 2) +
+  # __ Set aspect ratio
+  coord_fixed(ratio = 1) +
+  # __ Set empty theme
+  theme_void(base_size=12, base_family="Times New Roman") + # remove the default background, gridlines & default gray color around legend's symbols
+  # final theme tweaks
+  theme(legend.title = element_text(colour="black", size=10, face="bold",angle = 90), # adjust legend title
+        legend.title.align = 0.5,
+        legend.direction = "vertical",
+        legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(0,0,0,0),
+        #legend.position = c(1.01, 0.25), # relative position of legend
+        plot.margin = unit(c(t=0, r=1, b=0, l=0), unit="cm")
+        ) # adjust margins
+  # scale_color_distiller(palette = "Spectral", #labels = c(0, 0.25,0.5,0.75, 1),
+  #                       guide = guide_colourbar(
+  #                         title.position = "left",  barwidth=0.5,barheight=20,ticks=TRUE,
+  #                         nbin = 50))
+if (continious==FALSE) {
+  plt
+}else{
+  plt+scale_color_gradientn(colours = palette1,
+                                                   guide = guide_colourbar(
+                          title.position = "left",  barwidth=0.5,barheight=10,ticks=TRUE,
+                          nbin = 10))
+}
+  
+  }
+```
+
+```{r ltg-plot-fun}
+ltg<- function(df){
+  df |> 
+  ggplot()+
+  geom_point(aes(latitude, total, color=total))+
+    
+ scale_y_continuous(breaks = scales::pretty_breaks(n = 5))+
+  stat_summary(aes(latitude, total, color=total), fun.y=mean, geom="line", colour="black")+
+  
+    
+  #theme(legend.position = "none")+
+  theme(legend.title = element_text(colour="black", size=10, face="bold",angle = 90),
+        legend.title.align = 0.5)+
+  scale_x_continuous(breaks= c(-60,-30,0,30,60),
+                              labels=c("60°S","30°S","0","30°N","60°N"),
+                              limits=c(-80,90) )+
+  coord_flip()+
+  theme_Publication()+
+
+    scale_color_gradientn(colours = RColorBrewer::brewer.pal(11, 'Spectral')[11:1],
+                        guide = guide_colourbar(
+                          title.position = "left",  barwidth=0.5,barheight=10,ticks=TRUE,
+                          nbin = 10))+
+  theme(legend.position = "right",
+            legend.key.size= unit(0.2, "cm"),
+            legend.spacing = unit(0, "cm"),
+            legend.title = element_text(face="bold",angle = 90),
+        legend.title.align = 0.5)
+}
+```
+
+## ENSEMBLE UR and NR
+
+### HSI
+```{r data}
+ENSEMBLE_HSI.wmean.tot<- read_csv("data/ENSEMBLE_UR/ENSEMBLE_HSI.wmean.tot.csv")
+ENSEMBLE_HSI.wmean.tot_NR<- read_csv("data/ENSEMBLE_NR/ENSEMBLE_HSI.wmean.tot_NR.csv")
+```
+
+
+```{r Fig.4, fig.height=10, fig.width=10}
+plotHSI_UR <- plot.map(ENSEMBLE_HSI.wmean.tot[,c("longitude","latitude","total")] )+labs(color="Habitat Suitability Index")
+plotHSI_NR <- plot.map(ENSEMBLE_HSI.wmean.tot_NR[,c("longitude","latitude","total")] )+labs(color="Habitat Suitability Index")
+
+(plotHSI_UR+ theme(legend.position="none")) / plotHSI_NR+ 
+  plot_annotation(tag_levels = 'a',tag_prefi="(", tag_suffix=")")+
+  plot_layout(guides = 'collect')
+ggsave("img/Fig.4-mapHSI_URvsNR.png", width=29.7, height=28, units="cm", dpi=300)
+```
+
+
+# HSI UR vs HSI NR
+
+Provinces labels: 1-Arctic, 2-Subarctic Pacific, 3-California Current, 4-Northern Central Pacific, 5-Eastern Tropical Pacific, 6-Equatorial Pacific, 7-Peru Upwelling/Humboldt Current, 8-Southern Central Pacific, 9-Coral Sea, 10-Tasman Sea, 11-Sea of Japan, 12-South China Sea, 13-Southeast Asian Pocket basins,14-Arabian Sea,15-Bay of Bengal,16-Somali Current,17-Northern Indian Ocean, 18-Mid-Indian Ocean, 19-Southern Indian Ocean, 20-Agulhas Current, 21-Northwest Atlantic Subarctic,22-North Atlantic Drift, 23-Gulf of Mexico, 24-Central North Atlantic, 25-Mediterranean, 26-Mauritania/Cape Verde, 27-Tropical and West Equatorial Atlantic, 28-Guinea Basin and East Equatorial Atlantic, 29-Benguela Upwelling, 30-South Atlantic, 31-Circumglobal Subtropical Front, 32-Subantarctic waters, 33-Antarctic/Southern Ocean. B)  Relationship between the HSI in unrestricted (UR) and Natural range (NR) for each ocean basin. The solid black line is a 1:1 line.  Each mesopelagic province is coloured based on the scheme shown in A).
+
+```{r Fig.S8, fig.height=12, fig.width=15}
+mesopel_labels_prov <- read_csv("data/mesopel_labels_prov.csv")
+sf_object <- st_as_sf(mesopel_labels_prov, coords = c("longitude", "latitude"), crs = 4326)
+# Transform the coordinates to the desired CRS
+transformed_sf <- st_transform(sf_object, crs = PROJ)
+# Extract the transformed coordinates and convert them to a data frame
+NE_places.df.prj <- as.data.frame(st_coordinates(transformed_sf))
+# Rename the columns
+names(NE_places.df.prj)[1:2] <- c("X.prj", "Y.prj")
+# transform to data.table (easier to work with)
+mesopel_labels_prov <- data.table(NE_places.df.prj,mesopel_labels_prov)
+
+mes.prov_plt<-plot.map(grid |> drop_na(ProvId)|> mutate(ProvId=factor(ProvId)), continious=FALSE, alpha=0.6)+
+  scale_color_manual(values=c("#211674","#6e4e07","#d2c59c","#857346","#a2863f","#c0985e","#520077","#9e4b68","#fdbbe9","#e100ac","#a10013","#f58083","#d30b28","#e2e1e1","#b2b2b1","#828282","#4f4f4f","#85f8c6","#4c8d6e","#a1dabf","#3341a8","#4947e6","#52c2fb","#8cd3ff","#3681ab","#c3d0fe","#a5ff00","#a5ff00","#a5d365","#6f8c43","#eabafe","#ca90ff","#ca00ff"))+ 
+  new_scale_color() +
+  geom_text(data = mesopel_labels_prov,
+            aes(X.prj, Y.prj, label = ProvId, color = color),
+            size = 2.5) + theme(legend.position = "none") +
+  scale_color_manual(values = c("black", "white"))
+
+data<- left_join(ENSEMBLE_HSI.wmean.tot_NR |> rename(NR=total),
+                 ENSEMBLE_HSI.wmean.tot|> rename(FR=total), by=c("longitude","latitude","ProvId"))|> 
+  mutate(
+    basin = case_when(
+      ProvId %in% c(1) ~ "Arctic",
+      ProvId %in% c(2, 3, 4, 5, 6, 11, 12) ~ "North Pacific",
+      ProvId %in% c(7, 8, 9 , 10, 13) ~ "South Pacific",
+      ProvId %in% c(14, 15, 16, 17, 18, 19, 20) ~ "Indian Ocean",
+      ProvId %in% c(21, 22, 23, 24, 25, 26) ~ "North Atlantic",
+      ProvId %in% c(27, 28, 29, 30) ~ "South Atlantic",
+      ProvId %in% c(31, 32, 33) ~ "Southern Ocean",
+    ))
+
+hsiFR_NR <- data  |> 
+  ggplot()+
+  geom_abline(intercept =0, slope = 1, size = 0.5)+
+geom_point(aes(NR, FR, color=factor(ProvId)), alpha=0.5)+
+  facet_wrap(~basin,ncol = 4)+
+  labs(x="HSI NR", y="HSI UR", color="Province")+
+ 
+  theme(legend.position = "bottom")+guides(color=guide_legend(nrow=2,byrow=TRUE))+
+
+  theme_Publication()+
+    cowplot::panel_border()+
+scale_color_manual(values=c("#211674","#6e4e07","#d2c59c","#857346","#a2863f","#c0985e","#520077","#9e4b68","#fdbbe9","#e100ac","#a10013","#f58083","#d30b28","#e2e1e1","#b2b2b1","#828282","#4f4f4f","#85f8c6","#4c8d6e","#a1dabf","#3341a8","#4947e6","#52c2fb","#8cd3ff","#3681ab","#c3d0fe","#a5ff00","#a5ff00","#a5d365","#6f8c43","#eabafe","#ca90ff","#ca00ff"))+theme(legend.position = "none")
+
+
+mes.prov_plt / hsiFR_NR+
+  plot_layout(heights = c(1, 1.1))+ 
+  plot_annotation(tag_levels = 'A')& 
+  theme(plot.tag = element_text("Times New Roman",face = "bold", size = 12,hjust = -3, vjust = 0))
+
+ggsave("img/Fig.S8-HSI-FR_NR.png", width=22, height=25, units="cm", dpi=300)
+
+```
+
+# TSS and AUC summary table
+
+```{r Fig.S5}
+eval.sp <- read_csv( "data/ENSEMBLE_UR/ROC.TSS.eval.sp.csv", show_col_types = FALSE)|>  mutate(
+  Model=case_when(
+    Model=="EMwmeanByROC"~"ENSEMBE (wmean)",
+     Model=="EMmedianByROC"~"ENSEMBLE (median)",
+     Model=="EMmeanByROC"~"ENSEMBLE (mean)",
+    TRUE ~ Model
+  )) |> filter(Model %notin% c("ENSEMBE (wmean)","ENSEMBLE (median)","ENSEMBLE (mean)"))
+
+order<- eval.sp |> group_by(Model) |> filter(Eval.metric=="ROC") |> summarize( m= mean(Testing.data, na.rm=TRUE)) |>  arrange(desc(m)) |> pull(Model)
+ggboxplot(eval.sp ,x = "Model", y = "Testing.data",order=order,
+          fill = "grey",size=0.2,
+          bxp.errorbar = TRUE,
+  bxp.errorbar.width = 0.4,
+          orientation = "horizontal", facet.by = "Eval.metric")+
+  labs(y="AUC", x="")+theme(legend.position = "none")+
+  theme_Publication()+
+  panel_border()+
+  geom_hline(yintercept=0.6, color="grey", linetype="dashed")+
+  theme(legend.position = "none")+
+  labs(y="Score")
+ggsave("img/Fig.S5-AUC_vs_TSS.png", width=20, height=12, units="cm", dpi=300)
+```
+
+### Failed Models
+
+```{r}
+#total number of models ran
+Ntot<- read_csv( "data/ENSEMBLE_UR/ROC.TSS.eval.sp.csv", show_col_types = FALSE) |> nrow()
+Ntot
+```
+```{r}
+# failed models
+eval.sp |> select(Model,Run, Dataset,Eval.metric:Specificity) |> pivot_longer(cols=Testing.data:Specificity) |>  drop_na(value) |> filter(value==-Inf) |>  count(name) |>  mutate(perc=n/Ntot*100)
+
+# Summary of UC range for failed models
+eval.sp |> select(Model,Run, Dataset,Eval.metric:Specificity) |>  filter(Cutoff==-Inf) |>  summary()
+
+eval.sp |> select(Model,Run, Dataset,Eval.metric:Specificity, name)|>  filter(Cutoff==-Inf) |> 
+  left_join(META_zoop |> select(name, Nocc)) |> arrange(desc(Nocc)) |> 
+  psych::describe(quant=c(.25,.75))
+```
+
+### Summary Table for all metrics
+```{r TableS2}
+sum.metrics<- read_csv( "data/ENSEMBLE_UR/ROC.TSS.eval.sp.csv", show_col_types = FALSE)|> mutate(
+  Model=case_when(
+    Model=="EMwmeanByROC"~"ENSEMBLE (wmean)",
+     Model=="EMmedianByROC"~"ENSEMBLE (median)",
+     Model=="EMmeanByROC"~"ENSEMBLE (mean)",
+    TRUE ~ Model
+  ))|> select(Model,Run, Dataset,Eval.metric:Specificity) |> pivot_longer(cols=Testing.data:Specificity) |>  drop_na(value) |> filter(value!=-Inf) |> 
+  filter(Eval.metric=="ROC") |> 
+  group_by(Model, name) |> 
+  summarize(mean= mean(value, na.rm=TRUE),
+            sd=sd(value, na.rm=TRUE)) |> 
+  mutate_if(is.numeric, round,2) |> 
+  mutate(mean=paste0(mean,"(",sd,")")) |> 
+  select(-sd) |>  pivot_wider(names_from = Model, values_from = mean) |>
+  slice(2:n()) |>  ungroup() |> 
+  select(everything(), -contains("ENSEMBLE"),contains("ENSEMBLE")) |> 
+  flextable()|>  
+  theme_booktabs() |> 
+  autofit()
+sum.metrics
+#print(sum.metrics, "docx")
+```
+
+
+### AUC compare between models
+
+```{r Fig.2, fig.height=6, fig.width=8}
+eval.sp <- read_csv( "data/ENSEMBLE_UR/ROC.TSS.eval.sp.csv", show_col_types = FALSE) 
+ 
+meta<- META_zoop |> select(SPID, name,kingdom:species)
+eval.sp.plt<-eval.sp |>  left_join(meta, by = c("name","SPID"))  |> filter(Eval.metric=="ROC")
+eval.all <- eval.sp.plt |> mutate(phylum="All species") 
+
+eval<- rbind(eval.all,eval.sp.plt)|> mutate(
+  Model=case_when(
+    Model=="EMwmeanByROC"~"ENSEMBE (wmean)",
+     Model=="EMmedianByROC"~"ENSEMBLE (median)",
+     Model=="EMmeanByROC"~"ENSEMBLE (mean)",
+    TRUE ~ Model
+  ))  |>  mutate(Model=factor(Model)) |> left_join(
+    n_phylum|> mutate(phylum_label =paste(c("(b)", "(c)", "(d)","(e)","(f)", "(g)", "(h)","(a)"),phylum_label ))
+  ) 
+
+order<- eval |> group_by(Model) |> summarize( m= mean(Testing.data, na.rm=TRUE)) |>  arrange(desc(m)) |> pull(Model)
+
+ggerrorplot(eval ,x = "Model", y = "Testing.data",order=order,
+          color = "Model", size=0.3,
+          desc_stat = "mean_ci",palette = "jco",
+          orientation = "horizontal", facet.by = "phylum_label")+
+  
+  scale_color_manual(values=c(as.vector(rcartocolor::carto_pal(12, "Safe")),"dark orange"))+
+  labs(y="AUC", x="")+
+  geom_hline(yintercept=0.6, color="grey", linetype="dashed")+
+  theme(legend.position = "none")+  theme_Publication()+  panel_border()+ theme(legend.position = "none")
+
+ggsave("img/Fig.2-AUC_vs_model.png", width=20, height=18, units="cm", dpi=300)
+```
+
+
+
+# PAS and RUNs comparision
+
+### compare PAs
+
+```{r}
+eval.sp <- read_csv( "data/ENSEMBLE_UR/ROC.TSS.eval.sp.csv", show_col_types = FALSE) |> 
+  mutate(Model=ifelse(Model=="MAXENT.Phillips","MAXENT", Model))
+runs.sp <- eval.sp |> filter(Eval.metric=="ROC") |>  group_by(SPID, name, Model, Run, Dataset) |> summarise(mean=Testing.data,.groups="keep") |> ungroup() |>pivot_wider(names_from = Dataset, values_from = mean) |> 
+  filter(Model %notin% c("AQUAMAP","EMmeanByROC","EMwmeanByROC","EMmedianByROC","NPPEN")) |> group_by(SPID, name, Model) |> summarize(num=length(Run),.groups="keep")
+
+```
+
+```{r TableS3}
+dAUC.PA<- eval.sp |> filter(Eval.metric=="ROC", Dataset !="mergedData") |>  select(SPID, name, Model, Run, Dataset,mean=Testing.data)  |> ungroup()|>  pivot_wider(names_from = Dataset, values_from = mean) |> mutate(PA_dif=abs(PA1-PA2)) |> select(-PA1, -PA2)  |>
+  group_by(SPID, name, Model) |> summarize(PA.diff=mean(PA_dif), .groups="keep") |> 
+  mutate(status=case_when(
+  PA.diff < 0.1 ~"<.1",
+  PA.diff < 0.25~"<.25",
+  PA.diff >=0.25 ~">=.25",
+  is.na(PA.diff)==TRUE ~"failed to run"
+))
+
+round(mean(dAUC.PA$PA.diff, na.rm=TRUE),2)
+round(sd(dAUC.PA$PA.diff, na.rm=TRUE),2)
+
+tbl.PA  <- dAUC.PA |> tabyl(Model, status) %>%
+    adorn_percentages("row") %>%
+  adorn_pct_formatting(digits = 1) %>%
+  adorn_ns() |> 
+  flextable()%>% 
+  theme_booktabs() |> 
+  autofit()
+tbl.PA 
+#print(tbl.PA , "docx")
+```
+```{r}
+ eval.sp |> filter(Eval.metric=="ROC", Dataset !="mergedData") |>  select(SPID, name, Model, Run, Dataset,mean=Testing.data)  |> ungroup()|>  pivot_wider(names_from = Dataset, values_from = mean) |> mutate(PA_dif=abs(PA1-PA2))
+```
+
+```{r}
+mean(dAUC.PA$PA.diff, na.rm=TRUE)
+sd(dAUC.PA$PA.diff, na.rm=TRUE)
+
+AUC0.5 <- dAUC.PA |>  filter(PA.diff>0.5) |>  nrow() 
+AUC0.5
+```
+
+```{r}
+plot.PA1<- left_join(dAUC.PA,META_zoop |> select(name, Nocc), by = "name") |> 
+  filter(Nocc>0) |> 
+  
+  ggplot(aes(Nocc,PA.diff, color=PA.diff), alpha=0)+
+    geom_point()+
+  stat_smooth(method = "nls", formula = y ~ a * exp(-S * x), 
+              method.args = list(start = list(a = .2, S = 0.002)), se = FALSE, #starting values obtained from fit above
+              color = "black")+
+ scale_colour_gradientn(colours=rainbow(4))+
+  scale_x_continuous(breaks=scales::pretty_breaks(n=5))+
+  scale_y_continuous(breaks=scales::pretty_breaks())+
+  labs(y=TeX(r"($\Delta AUC$)"))+
+  theme_cowplot()+
+  theme(legend.position = "none")+ 
+  geom_hline(yintercept=0.1, linetype="dashed", color = "grey20")+
+  labs(x="Number of occurences")+
+  theme_Publication()
+
+
+plot.PA2 <- 
+ggplot(dAUC.PA)+
+  geom_boxplot(aes(x=Model, y=PA.diff))+
+  labs(y=TeX(r"($\Delta AUC$)"))+
+  theme_classic()+
+  theme_Publication()+ 
+  geom_hline(yintercept=0.1, linetype="dashed", color = "grey20")
+
+
+# Assuming you have a dataframe called 'data' with columns 'y' and 'x'
+data=left_join(dAUC.PA,META_zoop |> select(name, Nocc), by = "name") |> 
+  filter(Nocc>0) |> rename(y=PA.diff, x=Nocc) |> drop_na(y)
+model <- nls(y ~ a * exp(-b * x), data = data, start = list(a = .2, b = 0.002))
+
+# Accessing the coefficients
+coefs <- coef(model)
+a <- coefs[["a"]]
+b <- coefs[["b"]]
+
+# Calculating R-squared
+y_pred <- predict(model)
+y_mean <- mean(data$y)
+RSS <- sum((data$y - y_pred)^2)
+TSS <- sum((data$y - y_mean)^2)
+r_squared <- 1 - (RSS / TSS)
+
+# Printing the coefficients and R-squared value
+cat("Coefficients:\n")
+cat("a:", a, "\n")
+cat("b: -", b, "\n")
+cat("R-squared:", r_squared, "\n")
+```
+
+
+### compare RUNs
+
+```{r TableS3}
+dAUC.run<- eval.sp |> filter(Eval.metric=="ROC", Dataset !="mergedData", Run !="Full")|>  group_by(SPID, name, Model, Run, Dataset) |> summarise(mean=Testing.data, .groups="keep") |> ungroup()|> 
+  pivot_wider(names_from = Run, values_from = mean) |> mutate(run_dif=abs(RUN1-RUN2)) |> select(-RUN1, -RUN2)  |>
+ group_by(SPID, name, Model)|> summarize(run.diff=mean(run_dif), .groups="keep") |>   
+  mutate(status=case_when(
+  
+  run.diff < 0.1 ~"<.1",
+  run.diff < 0.25~"<.25",
+  run.diff >=0.25 ~">=.25",
+  is.na(run.diff)==TRUE ~"failed to run"
+))
+
+round(mean(dAUC.run$run.diff, na.rm=TRUE),2)
+round(sd(dAUC.run$run.diff, na.rm=TRUE),2)
+
+tbl.run <- dAUC.run |> tabyl(Model, status) %>%
+    adorn_percentages("row") %>%
+  adorn_pct_formatting(digits = 1) %>%
+  adorn_ns() |> 
+  flextable()%>% 
+  theme_booktabs() |> 
+  autofit()
+tbl.run
+#print(tbl.run, "docx")
+```
+```{r}
+eval.sp |> filter(Eval.metric=="ROC", Dataset !="mergedData", Run !="Full")|>  group_by(SPID, name, Model, Run, Dataset) |> summarise(mean=Testing.data, .groups="keep") |> ungroup()|> 
+  pivot_wider(names_from = Run, values_from = mean) |> mutate(run_dif=abs(RUN1-RUN2)) 
+```
+
+```{r}
+
+plot.RUN2 <- ggplot(dAUC.run)+
+  geom_boxplot(aes(x=Model, y=run.diff))+
+  labs(y=TeX(r"($\Delta AUC$)"))+
+  theme_classic()+
+  theme_classic()+
+  theme_Publication()+ 
+  geom_hline(yintercept=0.1, linetype="dashed", color = "grey20")
+
+
+plot.RUN1<- left_join(dAUC.run,META_zoop |> select(name, Nocc), by = "name") |> 
+  filter(Nocc>0) |> 
+  
+  ggplot(aes(Nocc,run.diff, color=run.diff), alpha=0)+
+    geom_point()+
+  stat_smooth(method = "nls", formula = y ~ a * exp(-S * x), 
+              method.args = list(start = list(a = .2, S = 0.002)), se = FALSE, #starting values obtained from fit above
+              color = "black")+
+ scale_colour_gradientn(colours=rainbow(4))+
+  scale_x_continuous(breaks=scales::pretty_breaks(n=5))+
+  scale_y_continuous(breaks=scales::pretty_breaks())+
+  labs(y=TeX(r"($\Delta AUC$)"))+
+  theme_cowplot()+
+  theme(legend.position = "none")+ 
+  geom_hline(yintercept=0.1, linetype="dashed", color = "grey20")+
+  labs(x="Number of occurences")+
+  theme_Publication()
+
+# Assuming you have a dataframe called 'data' with columns 'y' and 'x'
+data=left_join(dAUC.run,META_zoop |> select(name, Nocc), by = "name") |> 
+  filter(Nocc>0) |> rename(y=run.diff, x=Nocc) |> drop_na(y)
+model <- nls(y ~ a * exp(-b * x), data = data, start = list(a = .2, b = 0.002))
+
+# Accessing the coefficients
+coefs <- coef(model)
+a <- coefs[["a"]]
+b <- coefs[["b"]]
+
+# Calculating R-squared
+y_pred <- predict(model)
+y_mean <- mean(data$y)
+RSS <- sum((data$y - y_pred)^2)
+TSS <- sum((data$y - y_mean)^2)
+r_squared <- 1 - (RSS / TSS)
+
+# Printing the coefficients and R-squared value
+cat("Coefficients:\n")
+cat("a:", a, "\n")
+cat("b: -", b, "\n")
+cat("R-squared:", r_squared, "\n")
+
+```
+```{r}
+META_zoop |> drop_na(Nocc) |> filter(ModelStatus=="SDM") |> mutate(N= case_when(
+  Nocc<=44 ~"<=44",
+  Nocc<=200~"<=200",
+  Nocc>200~">200"
+)) |> select(N, Nocc) |> tabyl(N)
+```
+
+
+```{r Fig.3, fig.height=6, fig.width=12}
+plot_grid(plot.PA1 +theme(legend.position = "none"),
+          plot.PA2,
+          plot.RUN1+theme(legend.position = "none"),
+          plot.RUN2, ncol=2,labels = c('(a)', '(b)', "(c)", '(d)'), 
+          rel_widths = c(1.5, 2)
+          )
+ggsave("img/Fig.3-PA_vs_RUN.png", width=29, height=16, units="cm", dpi=300)
+```
+
+
+# Variable Importance
+
+BIOMOD FUNCTION 'VARIABLE IMPORTANCE'
+For the machine learning algorithms ANN and GBM, the AIC approach is not applicable because there is no model log-likelihood information available. Therefore, we have included the variable importance function that is implemented in the biomod2 package. This function uses a machine-learning approach once the models are trained to randomize one of the variables in each permutation and calculate a correlation score between the standard prediction and the new prediction. This score is considered to give an estimation of the variable importance in the model. The higher the value, the more importance the predictor variable has on the model. A value of 0 assumes no influence of that predictor. Note that this method does not account for interactions between variables and should be considered more as an information tool for each model independently. 
+
+```{r Fig.S7, fig.height=6, fig.width=8}
+varimp <- read_csv("data/ENSEMBLE_UR/ENSEMBLE_varimp.csv")
+meta<- META_zoop |> select(SPID, name,kingdom:species)
+varimp.plt<- varimp |>  left_join(meta, by = "name")
+
+all.sp<- varimp.plt |> mutate(phylum="All species")
+varimp<- rbind(all.sp,varimp.plt) |> left_join(n_phylum)
+order<- varimp |> group_by(Expl.var) |> summarize( m= mean(Var.imp, na.rm=TRUE)) |>  arrange(desc(m)) |> pull(Expl.var)
+
+varimp.plt<- ggerrorplot(varimp,x = "Expl.var", y = "Var.imp",order=order,
+                         size=0.3,
+          color = "Expl.var",  desc_stat = "mean_ci",palette = "uchicago",
+          orientation = "horizontal",facet.by ="phylum_label")+
+  rremove("legend")+
+  theme_Publication()+
+  panel_border()+
+  theme(legend.position = "none")+
+  labs(y="Variable Importance", x="Environmental Variable")
+
+varimp.plt
+ggsave("img/Fig.S7-VarImp.png", width=16, height=16, units="cm", dpi=300)
+```
+
+
+
+# Time Elapsed
+
+```{r Fig.S6}
+log.time<- read_csv("data/ENSEMBLE_UR/log_time.csv")
+
+META_zoop |> select(SPID, Nocc) |> mutate(file= glue::glue("SPID_{SPID}.txt")) |>  right_join(log.time) |> 
+  ggplot()+
+  geom_point(aes(x=Nocc, y=time/60))+
+  theme_Publication()+
+  labs(y="Time, minutes", x=" Number of occurences")+
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 7))
+
+ggsave("img/Fig.S6-time.png", width=15, height=10, units="cm", dpi=300)
+```
+
+
+```{r}
+mean(log.time$time/60, na.rm=TRUE)
+sd(log.time$time/60, na.rm=TRUE)
+range(log.time$time/60, na.rm=TRUE)
+```
+
+```{r}
+log.time<- read_csv("data/ENSEMBLE_NR/log_timeNR.csv")
+
+META_zoop |> select(SPID, Nocc) |> mutate(file= glue::glue("SPID_{SPID}.txt")) |>  right_join(log.time) |> 
+  ggplot()+
+  geom_point(aes(x=Nocc, y=time/60))+
+  theme_Publication()+
+  labs(y="Time, minutes", x=" Number of occurences")+
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 7))
+
+ggsave("img/timeNR.png", width=15, height=10, units="cm", dpi=300)
+```
+```{r}
+mean(log.time$time/60, na.rm=TRUE)
+sd(log.time$time/60, na.rm=TRUE)
+range(log.time$time/60, na.rm=TRUE)
+```
+
+# ENV Maps
+
+```{r}
+load(here::here("data/ENV.RData"))
+rm(EPI)
+```
+
+```{r Fig.S2, fig.height=10, fig.width=11}
+#MESO
+
+plot_grid(
+plot.map(MESO |> select(longitude,latitude, Temp))+labs(color="Temp"),
+plot.map(MESO |> select(longitude, latitude, Sal) |> filter(Sal>25)) + labs(color = "Sal") +
+  scale_color_gradientn(
+    colours = RColorBrewer::brewer.pal(11, 'Spectral')[11:1],
+    trans="log10",
+    guide = guide_colourbar(
+      title.position = "left",
+      barwidth = 0.5,
+      barheight = 10,
+      ticks = TRUE,
+      nbin = 10
+    )
+  ) ,
+plot.map(MESO |> select(longitude,latitude, O2))+labs(color="O2"),
+plot.map(MESO |> select(longitude,latitude, NO3))+labs(color="NO3"),
+plot.map(MESO |> select(longitude,latitude, MLD))+labs(color="MLD"),
+plot.map(MESO |> select(longitude,latitude, Zeu))+labs(color="Zeu"),
+plot.map(MESO |> select(longitude,latitude, NPP))+labs(color="NPP"), labels = "AUTO", ncol = 2
+)
+
+ggsave("img/Fig.S2-mapENV_MESO.png", width=29.7, height=25, units="cm", dpi=300)
+```
+```{r Fig.S3, fig.height=10, fig.width=11}
+#BOTH
+plot_grid(
+plot.map(BOTH |> select(longitude,latitude, Temp))+labs(color="Temp"),
+plot.map(BOTH|> filter(Sal>25) |> select(longitude,latitude, Sal))+labs(color="Sal"),
+plot.map(BOTH |> select(longitude,latitude, O2))+labs(color="O2"),
+plot.map(BOTH |> select(longitude,latitude, NO3))+labs(color="NO3"),
+plot.map(BOTH |> select(longitude,latitude, MLD))+labs(color="MLD"),
+plot.map(BOTH |> select(longitude,latitude, Zeu))+labs(color="Zeu"),
+plot.map(BOTH |> select(longitude,latitude, NPP))+labs(color="NPP"), labels = "AUTO", ncol = 2
+)
+
+
+ggsave("img/Fig.S3-mapENV_BOTH.png", width=29.7, height=25, units="cm", dpi=300)
+```
+```{r}
+# mat : is a matrix of data
+# ... : further arguments to pass to the native R cor.test function
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(mat)
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+# matrix of the p-value of the correlation
+load(here::here("data/ENVfull.RData"))
+rm(EPI)
+env=MESO|> select(ends_with("mean"),Zeu,NPP)|> drop_na()
+env.both=BOTH|> select(ends_with("mean"),Zeu,NPP)|> drop_na()
+```
+
+
+```{r Fig.S4, fig.height=6, fig.width=10}
+# Define the output file
+png("img/Fig.S4-corrplots.png", width=10, height=8,units = "in",res=300)
+# Set up a 2x2 plotting area
+par(mfrow=c(2,2))
+
+# First corrplot
+corrplot::corrplot(cor(env), method="color", col=col(200),  
+         type="upper", order="hclust", 
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         # Combine with significance
+         p.mat = cor.mtest(env), sig.level = 0.01, insig = "blank", 
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE 
+         )
+# Add label to the first plot
+mtext("A", side=3, line=1, at=0, adj=0,font=2)
+
+# Second corrplot
+corrplot::corrplot(cor(env.both), method="color", col=col(200),  
+         type="upper", order="hclust", 
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         # Combine with significance
+         p.mat = cor.mtest(env.both), sig.level = 0.01, insig = "blank", 
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE 
+         )
+# Add label to the second plot
+mtext("B", side=3, line=1, at=0, adj=0,font=2)
+
+```
+
+
+# Sampling effort
+```{r Fig.S9}
+effort<- read_csv("data/sampling-effort.csv")
+plot.map(effort |> select(longitude,latitude, total_occ1))+ 
+  labs(color = "Number of Obs Species (logged)") +
+  scale_color_gradientn(
+    colours = palette1,
+   trans="log10",
+    guide = guide_colourbar(
+      title.position = "left",
+      barwidth = 0.5,
+      barheight = 10,
+      ticks = TRUE,
+      nbin = 10
+    )
+  )
+
+
+ggsave("img/Fig.S9-smpling-effort.png", width=29.7, height=14, units="cm", dpi=300)
+```
+# Missing Info
+```{r Fig.S1}
+META <- read_csv("data/META_all.csv",show_col_types=FALSE)
+library(naniar)
+gg_miss_var(META |> select(-c(SPID,FILE, AphiaID, AcceptedSciName, kingdom:species)))+theme_Publication()
+
+ggsave("img/Fig.S1-missing_info.png", width=10, height=5, units="in", dpi=300)
+```
+## ENSEMBLE UR and NR
+
+### HSI
+```{r data}
+ENSEMBLE_HSI.wmean <- read_csv("data/ENSEMBLE_UR/ENSEMBLE_HSI.wmean.csv")
+ENSEMBLE_HSI.wmean.tot<- read_csv("data/ENSEMBLE_UR/ENSEMBLE_HSI.wmean.tot.csv")
+ENSEMBLE_HSI.wmean.tot_NR<- read_csv("data/ENSEMBLE_NR/ENSEMBLE_HSI.wmean.tot_NR.csv")
+
+```
+
+```{r}
+sums = function(dd){
+  # remove rows that had empty values  in all species columns
+  dd1= dd[rowSums(is.na(dd[,-c(1:3)])) != ncol(dd[,-c(1:3)]), ]
+  coord=dd1[,1:3]
+  total=rowSums(dd1[,-c(1:3)], na.rm =TRUE)
+  return(cbind(coord,total))
+}
+```
+
+
+### Plots per Phylum
+
+## Annelida -quantile (dim=2)
+
+````{r hsi-only}
+sp2<- META_zoop |>  select(name, phylum) |>  filter(phylum=="Annelida") |> mutate(col_names=paste0(name,"_HSIwmean")) |> pull(col_names)
+ENSEMBLE_HSI.wmean1<-ENSEMBLE_HSI.wmean|> select(longitude,latitude,ProvId,all_of(sp2))
+ENSEMBLE_HSI.wmean.tot1 <- sums(ENSEMBLE_HSI.wmean1)|> mutate(total=scales::rescale(total)) |> drop_na(ProvId)
+SR_UR1<- plot.map(ENSEMBLE_HSI.wmean.tot1[,c("longitude","latitude","total")] )+labs(title="Annelida",color="HSI (scaled)")
+SR_UR1 
+```
+
+## Arthropoda -quantile
+
+```{r hsi-only}
+sp2<- META_zoop |>  select(name, phylum) |>  filter(phylum=="Arthropoda") |> mutate(col_names=paste0(name,"_HSIwmean")) |> pull(col_names)
+ENSEMBLE_HSI.wmean1<-ENSEMBLE_HSI.wmean|> select(longitude,latitude,ProvId,any_of(sp2))
+ENSEMBLE_HSI.wmean.tot1 <- sums(ENSEMBLE_HSI.wmean1)|> mutate(total=scales::rescale(total)) |> drop_na(ProvId)
+SR_UR2<- plot.map(ENSEMBLE_HSI.wmean.tot1[,c("longitude","latitude","total")] )+labs(title="Arthropoda",color="HSI (scaled)")
+SR_UR2 
+```
+
+## Chaetognatha-quantile(dim=2)
+
+````{r hsi-only}
+sp2<- META_zoop |>  select(name, phylum) |>  filter(phylum=="Chaetognatha") |> mutate(col_names=paste0(name,"_HSIwmean")) |> pull(col_names)
+ENSEMBLE_HSI.wmean1<-ENSEMBLE_HSI.wmean|> select(longitude,latitude,ProvId,any_of(sp2))
+ENSEMBLE_HSI.wmean.tot1 <- sums(ENSEMBLE_HSI.wmean1)|> mutate(total=scales::rescale(total)) |> drop_na(ProvId)
+SR_UR3<- plot.map(ENSEMBLE_HSI.wmean.tot1[,c("longitude","latitude","total")] )+labs(title="Chaetognatha",color="HSI (scaled)")
+SR_UR3 
+```
+
+## Chordata-equal(dim=3)
+
+````{r hsi-only}
+sp2<- META_zoop |>  select(name, phylum) |>  filter(phylum=="Chordata") |> mutate(col_names=paste0(name,"_HSIwmean")) |> pull(col_names)
+ENSEMBLE_HSI.wmean1<-ENSEMBLE_HSI.wmean|> select(longitude,latitude,ProvId,any_of(sp2))
+ENSEMBLE_HSI.wmean.tot1 <- sums(ENSEMBLE_HSI.wmean1)|> mutate(total=scales::rescale(total)) |> drop_na(ProvId)
+SR_UR4<- plot.map(ENSEMBLE_HSI.wmean.tot1[,c("longitude","latitude","total")] )+labs(title="Chordata",color="HSI (scaled)")
+SR_UR4 
+```
+
+## Cnidaria-quantile
+
+````{r hsi-only}
+sp2<- META_zoop |>  select(name, phylum) |>  filter(phylum=="Cnidaria") |> mutate(col_names=paste0(name,"_HSIwmean")) |> pull(col_names)
+ENSEMBLE_HSI.wmean1<-ENSEMBLE_HSI.wmean|> select(longitude,latitude,ProvId,any_of(sp2))
+ENSEMBLE_HSI.wmean.tot1 <- sums(ENSEMBLE_HSI.wmean1)|> mutate(total=scales::rescale(total)) |> drop_na(ProvId)
+SR_UR5<- plot.map(ENSEMBLE_HSI.wmean.tot1[,c("longitude","latitude","total")] )+labs(title="Cnidaria",color="HSI (scaled)")
+SR_UR5 
+```
+
+## Ctenophora- equal (dim=3)
+
+````{r hsi-only}
+sp2<- META_zoop |>  select(name, phylum) |>  filter(phylum=="Ctenophora") |> mutate(col_names=paste0(name,"_HSIwmean")) |> pull(col_names)
+ENSEMBLE_HSI.wmean1<-ENSEMBLE_HSI.wmean|> select(longitude,latitude,ProvId,any_of(sp2))
+ENSEMBLE_HSI.wmean.tot1 <- sums(ENSEMBLE_HSI.wmean1)|> mutate(total=scales::rescale(total)) |> drop_na(ProvId)
+SR_UR6<- plot.map(ENSEMBLE_HSI.wmean.tot1[,c("longitude","latitude","total")] )+labs(title="Ctenophora",color="HSI (scaled)")
+SR_UR6 
+```
+
+
+## Mollusca-quantile
+
+````{r hsi-only}
+sp2<- META_zoop |>  select(name, phylum) |>  filter(phylum=="Mollusca") |> mutate(col_names=paste0(name,"_HSIwmean")) |> pull(col_names)
+ENSEMBLE_HSI.wmean1<-ENSEMBLE_HSI.wmean|> select(longitude,latitude,ProvId,any_of(sp2))
+ENSEMBLE_HSI.wmean.tot1 <- sums(ENSEMBLE_HSI.wmean1)|> mutate(total=scales::rescale(total)) |> drop_na(ProvId)
+SR_UR7<- plot.map(ENSEMBLE_HSI.wmean.tot1[,c("longitude","latitude","total")] )+labs(title="Mollusca",color="HSI (scaled)")
+SR_UR7 
+```
+## combine plots
+```{r HSI-only-plots,fig.height=10, fig.width=10}
+SR_UR1+SR_UR2+SR_UR3+SR_UR4+SR_UR5+SR_UR6+SR_UR7+
+  plot_layout(nrow=4)+
+  plot_annotation(tag_levels = 'A')& 
+  theme(plot.tag = element_text("Times New Roman",face = "bold", size = 12,hjust = -3, vjust = 0))
+```
+
+## end

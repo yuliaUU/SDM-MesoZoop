@@ -1,0 +1,703 @@
+---
+title: "Running Models"
+output: html_document
+date: '2022-06-25'
+---
+```{r}
+### Required library #####
+library(foreach)
+library(doParallel)
+library(janitor)
+library(tidyverse)
+`%notin%` <- Negate(`%in%`)
+# custom functions
+path<-  here::here()
+META_zoop <- read_csv(paste0(path,"data/META_zoop.csv"),show_col_types=FALSE)
+```
+```{r}
+META_zoop |> tabyl(Env)
+```
+
+#UR
+```{r}
+files1 <- META_zoop |>  filter(ModelStatus =="SDM",  Env %in% c("BOTH", "MESO")) |> pull(SPID)
+# check that everything is run
+rdas <- list.files(path='EVAL/PROB/', pattern="*.Rdata")
+fil.rda <- paste0("PROB_",files1,".Rdata")
+length(rdas)
+length(fil.rda)
+fil.rda[fil.rda %notin% rdas]
+files=readr::parse_number(fil.rda[fil.rda %notin% rdas])
+files
+```
+
+```{r}
+#files <- META_zoop |>  filter(ModelStatus =="SDM",  Env %in% c("BOTH", "MESO")) |> pull(SPID)
+
+numCores<- detectCores()
+# Detect the number of available cores and create cluster
+#cl <- parallel::makeCluster(numCores)
+# Detect the number of available cores and create cluster
+# Activate cluster for foreach library
+doParallel::registerDoParallel(numCores)
+foreach (i=1:length(files)) %dopar% {
+library(readr)
+library(nppen)
+library(biomod2)
+library(dplyr)
+library(glue)
+library(splitstackshape)
+library(sp)
+library(pROC)
+library(tidyr)
+library(glue)
+library(aquamean)
+library(stringr)
+library(dplyr)
+library(tictoc)
+library(modEvA)
+# functions to avoid conflicts
+`%notin%` <- Negate(`%in%`)
+select=dplyr::select
+rename=dplyr::rename
+filter=dplyr::filter
+summarize=dplyr::summarize
+count=dplyr::count
+group_by=dplyr::group_by
+sink(glue("E:/log/SPID_{files[i]}.txt"), append=T)
+print(glue::glue("JOB SPID#{files[i]}: {META_zoop$name[META_zoop$SPID==files[i]]} started"))
+tic()
+print(glue::glue("loading data"))
+# loading data
+path<-  here::here() # path to variables
+META_zoop <- read_csv(paste0(path,"data/META_zoop_example.csv"),show_col_types=FALSE) # load metafile
+load(paste0(path,"data/ENV.RData"))# load environmental data: 3 files MESO, EPI, BOTH
+# Paths to save outputs into
+path_to_maxent=paste0(path,"maxent.jar")
+path_to_occ= paste0(path,'data/occurance_gridded')
+file.prob = glue::glue("PROB/PROB_{files[i]}.Rdata") # probability of occurrence (HSI)
+file.eval = glue::glue("EVAL_METRICS/EvalMetrics_{files[i]}.Rdata") # AUC, TSS, Cutoff scores
+file.param = glue::glue("VarImp/VarImp_ENSEMBLE_{files[i]}.Rdata") # Varibale Importance
+# try() will make the script to skip the steps if smth did into ran or there was an error
+try({
+print(glue::glue("0. Formatting Data for BIOMOD2 "))
+################## 0. Formatting Data for BIOMOD2  ##################
+metainfo <- META_zoop |> filter(SPID %in% files[i])
+# select ENV variables
+if (metainfo$Env == "BOTH"){ENV = BOTH }
+#if (metainfo$Env == "EPI" ){ENV = EPI  |> select(longitude, latitude, ends_with("mean"), Zeu, NPP)}
+if (metainfo$Env == "MESO"){ENV = MESO }
+# contains 1 and 0 on global grid
+df <- read_csv(glue("{path_to_occ}/{files[i]}.csv"), show_col_types = FALSE) |>
+select(c("longitude", "latitude", "occ"))  |>
+right_join(ENV, by = c("longitude", "latitude")) |>
+mutate(occ = case_when(occ >= 1 ~ 1,
+TRUE ~ NA_real_)) |>
+drop_na(Temp, Sal, O2, NO3, MLD, Zeu, NPP)
+# number of occ
+nb <-  nrow(df |> filter(occ==1))
+#######################################1.  MODEL SETTINGS ################################################
+print(glue::glue("1.  MODEL SETTINGS"))
+# Selection criteria defined by (see Jones & Cheung,2011 and Albouy et al, 2011)
+# Inspiration from T.hattab, C. Albouy, F. Bennedeti, F. Guillaumon, M. Oyinlola, R. Maraj, T. Clark, W. Cheung, O. Irisson
+# SELECTION of  BIOMOD2 models: only models with High power of current projection (SDM) and no power of prediction (ENM).
+NATIVERG<-c('GLM','GAM','MAXENT.Phillips','RF','FDA','CTA','SRE','ANN')
+#set number of cores
+n.cores=16
+gam_model <- ifelse(nb<44,'GAM_gam',"GAM_mgcv")
+myBiomodOption <-
+BIOMOD_ModelingOptions(
+GBM = list(n.trees = 2500,n.cores = n.cores,n.minobsinnode = 10, train.fraction = 0.7,bag.fraction = 0.5,interaction.depth = 7),
+SRE = list(quant = 0.05),
+ANN =  list(NbCV = 5, maxit = 300),
+RF = list(ntree = 500),
+GLM = list(type = 'quadratic', interaction.level = 0,myFormula = NULL, test = 'BIC', family = 'binomial',
+control = glm.control(epsilon = 1e-08,maxit = 1000,trace = FALSE)),
+MAXENT.Phillips  =  list(path_to_maxent.jar = path_to_maxent, memory_allocated = 8192,maximumiterations = 200,
+visible = FALSE, linear = TRUE,quadratic = TRUE,product = TRUE,threshold = TRUE,hinge = TRUE,
+lq2lqptthreshold = 80, l2lqthreshold = 10,  hingethreshold = 15, beta_threshold = -1,
+beta_categorical = -1, beta_lqp = -1,beta_hinge = -1,    defaultprevalence = 0.5 ),
+GAM = list(algo = gam_model,type = 's_smoother',k = -1,interaction.level = 0,myFormula = NULL,
+family = binomial(link = 'logit'), method = 'GCV.Cp', optimizer = c('outer', 'newton'),
+select = FALSE,knots = NULL,paraPen = NULL,control = list( nthreads = 1,irls.reg = 0,epsilon = 1e-07 ,
+maxit = 200,trace = FALSE,mgcv.tol = 1e-07, mgcv.half = 15, rank.tol = 1.49011611938477e-08,
+nlm = list( ndigit = 7, gradtol = 1e-06,stepmax = 2,steptol = 1e-04,iterlim = 200,check.analyticals = 0),
+optim = list(factr = 1e+07),newton = list(conv.tol = 1e-06, maxNstep = 5, maxSstep = 2, maxHalf = 30,  use.svd = 0),
+outerPIsteps = 0,idLinksBases = TRUE, scalePenalty = TRUE,efs.lspmax = 15,efs.tol = 0.1,keepData = FALSE,
+scale.est = "fletcher",     edge.correct = FALSE)))
+###################################### 2. MODEL DEFINITION #################################
+print(glue::glue("2. MODEL DEFINITION"))
+# Formatting Data for BIOMOD2 (for more info check BIOMOD_FormatingData?)
+myBiomodData <- BIOMOD_FormatingData(
+resp.var = SpatialPointsDataFrame(df[, 1:2], df[,3], proj4string = CRS("+proj=longlat +datum=WGS84")),
+expl.var = SpatialPointsDataFrame(df[, 1:2], df[, -c(1:3)],  proj4string = CRS("+proj=longlat +datum=WGS84")),
+resp.name = as.character(metainfo$name),
+PA.nb.rep = 2,
+PA.nb.absences = nb,
+PA.strategy = 'random'
+)
+# set model parameters
+data.split.perc = case_when(nb <= 44 ~ 95, nb <= 200 ~ 80, nb  > 200 ~ 70)
+do.full.models = if_else(nb > 44, TRUE, TRUE, missing = NA)
+nb.rep = case_when(nb <= 44 ~ 2, nb <= 200 ~ 2, nb  > 200 ~ 2)
+### A. IND MODEL RUN
+# for opt :  NbRunEval = 3, and VarImport = 3, here put at and 0 to make it faster
+myBiomodModelOut <- BIOMOD_Modeling(
+  myBiomodData,
+  models = NATIVERG,
+  bm.options = myBiomodOption,
+  nb.rep = nb.rep,
+  data.split.perc = data.split.perc,
+  weights = NULL,
+  var.import = 0,
+  metric.eval = c('ROC', 'TSS'),
+  save.output = TRUE,
+  scale.models = FALSE,
+  do.full.models = do.full.models,
+  #should be TRUE/ PUT FALSE TO /2 the nb of run
+  modeling.id = sprintf('PROJ_ALLMODEL_SPID_%s', files[i]) # Definition of the name of the FILE and save
+)
+### B. ENSEMBLE MODEL RUN
+ENSEMBLE <- BIOMOD_EnsembleModeling(
+  bm.mod = myBiomodModelOut,
+  models.chosen = 'all',
+  em.by = 'all',
+  metric.select = c('ROC', "TSS", "Boyce"),
+  metric.select.thresh = c(0.6),
+  metric.eval = c('TSS', 'ROC'),
+  prob.mean = TRUE,
+  prob.cv = FALSE,
+  prob.ci = FALSE,
+  prob.ci.alpha = 0.05,
+  prob.median = TRUE,
+  committee.averaging = FALSE,
+  prob.mean.weight = TRUE,
+  prob.mean.weight.decay = 'proportional',
+  var.import = 1
+)
+### c. AQUAMAP & NPPEN will be assesed in section 3
+###################################### 3. PROJECTION into MESO ENV #################################
+print(glue::glue("3. PROJECTION into MESO ENV"))
+# new set of environmental conditions
+ENV_new<-  MESO |>  drop_na()
+# A. COMPUTATION OF BIOMOD MODELS
+myBiomodProjection <-
+  BIOMOD_Projection(
+    bm.mod = myBiomodModelOut,
+    new.env = ENV_new[, -c(1:2)],
+    new.env.xy = ENV_new[, 1:2],
+    silent = TRUE,
+    proj.name = 'model',
+    models.chosen = 'all',
+    compress  = 'gzip',
+    build.clamping.mask = FALSE
+  )
+# B. COMPUTATION OF THE ENSEMBLE MODEL
+ENSEMBLEPROJ <- BIOMOD_EnsembleForecasting(
+  bm.proj = myBiomodProjection,
+  bm.em = ENSEMBLE,
+  compress = 'gzip',
+  nb.cpu = n.cores
+)
+# C. AQUAMAP  &   D. NPPEN
+# get coordinates of points that were used in each run
+set<- get_calib_lines(myBiomodModelOut) |> as_tibble()%>%
+janitor::clean_names("all_caps") |> cbind(df[,1:3]) |> drop_na()
+run.names=set |> select(starts_with("RUN")) |> colnames()
+run.names=c(run.names,"Full_PA1","Full_PA2")
+PA = cbind(myBiomodData@coord,myBiomodData@PA.table) |> cbind(df[,3]) |> mutate(occ=ifelse(is.na(occ),0,occ)) |>
+filter(occ==0)
+pred=data.frame(ENV_new[,1:2])
+for (i in 1: length(run.names)){
+if(run.names[i] %in% c("Full_PA1","Full_PA2")){
+run=set |> filter(occ==1) |> select(longitude, latitude, occ) |> mutate(run=TRUE)
+}else{
+run    = set |> select(longitude, latitude, occ,run.names[i])
+colnames(run)[4]="run"
+}
+run.type=sub("_.*", "", run.names[i])
+pa.type=sub(".*_", "", run.names[i])
+data<- run |> filter(run==TRUE) |> select(-run) |> left_join(ENV, by = c("longitude", "latitude"))
+myAquaOut <- aquatrap(data[, -c(1:3)], quant = c(0.01, 0.25, 0.75, 0.99))
+myAquaProjection <- aquatrap_pred(ENV_new[,-c(1:2)], myAquaOut)$yul
+myNppenProjection <- nppen(df |> filter(occ==1)|> select(-c("longitude", "latitude", "occ", "NPP")),
+ENV_new |> select(-c("longitude", "latitude", "NPP")) |> drop_na(),# predict into MESO ENV
+fast = TRUE,
+cores = n.cores)|> as_tibble()
+# put predictions on teh same scale as biomod2 (0-1000)
+pred.run=cbind(ENV_new[,1:2],myAquaProjection*1000,myNppenProjection*1000)
+col_nameNPPEN=paste0(metainfo$name,"_",pa.type,"_",run.type,"_NPPEN")
+col_nameAQUAMEAN=paste0(metainfo$name,"_",pa.type,"_",run.type,"_AQUAMEAN")
+colnames(pred.run)[3:4]=c(col_nameNPPEN,col_nameAQUAMEAN)
+pred=left_join(pred,pred.run, by = c("longitude", "latitude"))
+}
+###################################### 4. Get Probabilities of Occurrence ########################################
+print(glue::glue("4. Get Probabilities of Occurrence "))
+# all probabilities are scaled to 0-1000
+PROB<- cbind(ENV_new[, 1:2],
+get_predictions(ENSEMBLEPROJ, as.data.frame =TRUE), # ENSEMBLEpred
+get_predictions(myBiomodProjection, as.data.frame =TRUE)) |>  # Biomodpred
+left_join(pred, by = c("longitude", "latitude"))|>  #AQUAMAPpred and #NPPEN pred
+mutate_all(~replace(., is.nan(.), NA))
+save(PROB, file = file.prob)
+###################################### 5. Evaluation metric TSS, ROC CURVES ##################################################
+print(glue::glue("5. Evaluation metric TSS, ROC CURVES"))
+# A. BIOMOD MODELS
+myBiomodModelEval <- get_evaluations(myBiomodModelOut, as.data.frame = TRUE)
+# B. ENSEMBLE
+myENSEMBLEEval <- get_evaluations(ENSEMBLE, as.data.frame = TRUE)
+# C. AQUAMAP  and D. NPPEN
+# evaluation metric for NPPEN and AQUAMAP
+metric=data.frame()
+for (i in 1: length(run.names)){
+if(run.names[i] %in% c("Full_PA1","Full_PA2")){
+run=set |> filter(occ==1) |> select(longitude, latitude, occ) |> mutate(run=TRUE)
+}else{
+run= set |> select(longitude, latitude, occ,run.names[i])
+colnames(run)[4]="run"
+}
+run.type=sub("_.*", "", run.names[i])
+pa.type=sub(".*_", "", run.names[i])
+pa=PA |>  select(longitude, latitude, occ,all_of(pa.type))
+colnames(pa)[4]="run"
+data<- rbind(run,pa) |> filter(run==TRUE) |> select(-run) |> left_join(ENV, by = c("longitude", "latitude"))
+myAquaOut <- aquatrap(data[, -c(1:3)], quant = c(0.01, 0.25, 0.75, 0.99))
+myAquaProjection <- aquatrap_pred(data[, -c(1:3)], myAquaOut)$yul
+myNppenProjection <- nppen(df|> filter(occ==1) |> select(-c("longitude", "latitude", "occ", "NPP")),
+data |> select(-c("longitude", "latitude", "occ", "NPP")),
+fast = TRUE,cores = n.cores)|> as_tibble()
+# convert predictions to a 0-1000 sclae to be consistent with biomod2
+data=cbind(data,myAquaProjection*1000,myNppenProjection*1000)
+boyce.nppen=Boyce(obs = data$occ, pred = data$value, plot = FALSE )$Boyce
+tss.nppen=bm_FindOptimStat(metric.eval = 'TSS', data$occ, fit = data$value)
+roc.nppen=bm_FindOptimStat(metric.eval = 'ROC', data$occ, fit = data$value)
+boyce.aquamap=Boyce(obs = data$occ, pred = data$myAquaProjection, plot = FALSE )$Boyce
+tss.aquamap=bm_FindOptimStat(metric.eval = 'TSS', data$occ, fit = data$myAquaProjection)
+roc.aquamap=bm_FindOptimStat(metric.eval = 'ROC', data$occ, fit = data$myAquaProjection)
+Model.name = c(rep(paste0("NPPEN_",run.names[i]),2), rep(paste0("AQUAMEAN_",run.names[i]),2))
+Algo= c(rep("NPPEN",2),rep("AQUAMEAN",2))
+Run= c(rep(run.type,4))
+Dataset=c(rep(pa.type,4))
+Eval.metric=c(rep(c("ROC","TSS"),2))
+Boyce=c(rep(boyce.nppen,2),rep(boyce.aquamap,2))
+eval=rbind(roc.nppen,tss.nppen,roc.aquamap,tss.aquamap) |>as_tibble() |>   janitor::clean_names("upper_camel") |> rename(Testing.data=BestStat)
+metric.run<- data.frame(Model.name,Algo,Run,Dataset,Eval.metric,eval,Boyce)
+metric=rbind(metric,metric.run)
+}
+# get all models together
+EVAL <- plyr::rbind.fill(myBiomodModelEval |> mutate(Model=Algo),
+myENSEMBLEEval,
+metric|> mutate(Model=Algo))
+save(EVAL,file = file.eval)
+###################################### 6. Variable Importance  ######################################
+print(glue::glue("6. Variable Importance"))
+PARAMETER <- get_variables_importance(ENSEMBLE, as.data.frame = TRUE)
+save(PARAMETER, file = file.param)
+toc()
+print(glue::glue("JOB SPID#{metainfo$SPID}: {metainfo$name} complete"))
+}, silent=FALSE)
+sink()
+}
+
+```
+# NR runs
+
+```{r}
+files <- META_zoop |>  filter(ModelStatusNR=="SDM" , Env %in% c("BOTH", "MESO")) |> pull(SPID) |> as.numeric()
+# Detect the number of available cores and create cluster
+
+#numCores <- detectCores()
+numCores <- 10
+registerDoParallel(numCores) 
+foreach (i=14:length(files)) %dopar% {
+  # foreach (i=1:length(files)) %dopar% {
+  library(readr)
+  library(nppen)
+  library(biomod2)
+  library(dplyr)
+  library(glue)
+  library(splitstackshape)
+  library(sp)
+  library(pROC)
+  library(tidyr)
+  library(glue)
+  library(aquamean)
+  library(stringr)
+  library(dplyr)
+  library(tictoc)
+  library(modEvA)
+  # functions to avoid conflicts
+  `%notin%` <- Negate(`%in%`)
+  select=dplyr::select
+  rename=dplyr::rename
+  filter=dplyr::filter
+  summarize=dplyr::summarize
+  count=dplyr::count
+  group_by=dplyr::group_by
+  
+  sink(glue("log_NR/SPID_{files[i]}.txt"), append=T)
+  print(glue::glue("JOB SPID#{files[i]}: {META_zoop$name[META_zoop$SPID==files[i]]} started"))
+  tic()
+  
+  print(glue::glue("loading data"))
+  # loading data 
+  path<-  "C:/Users/egoro/Dropbox/02-SpeciesDistrModel/" # path to variables
+  META_zoop <- read_csv(paste0(path,"data/META_zoop.csv"),show_col_types=FALSE) # load metafile
+  load(paste0(path,"data/ENV.RData"))# load environmental data: 3 files MESO, EPI, BOTH
+  grid <- read_csv(paste0(path,"data/GEO.csv"),show_col_types=FALSE) |> select(longitude,latitude,ProvId)
+  
+  # Paths to save outputs into
+  
+  path_to_maxent=paste0(path,"maxent.jar")
+  path_to_occ= paste0(path,'data/occurance_data/occurance_gridded')
+  file.prob = glue::glue("E:/EVAL_NR/PROB/PROB_{files[i]}.Rdata") # probability of occurrence (HSI)
+  file.eval = glue::glue("E:/EVAL_NR/EVAL_METRICS/EvalMetrics_{files[i]}.Rdata") # AUC, TSS, Cutoff scores
+  file.param = glue::glue("E:/EVAL_NR/VarImp/VarImp_ENSEMBLE_{files[i]}.Rdata") # Varibale Importance
+  
+  # try() will make the script to skip the steps if smth did into ran or there was an error
+  print(glue::glue("0. Formatting Data for BIOMOD2 "))
+  ################## 0. Formatting Data for BIOMOD2  ################## 
+  metainfo <- META_zoop |> filter(SPID %in% files[i]) 
+  
+  # select ENV variables
+  if (metainfo$Env == "BOTH"){ENV = BOTH }
+  #if (metainfo$Env == "EPI" ){ENV = EPI  |> select(longitude, latitude, ends_with("mean"), Zeu, NPP)}
+  if (metainfo$Env == "MESO"){ENV = MESO }
+  
+  ENV_NR<- ENV |> left_join(grid)|> filter(ProvId %notin% lapply(str_split(metainfo$ProvNR, ';'), as.integer)[[1]]) |>
+    drop_na(ProvId) |> 
+    select(-ProvId) |> drop_na()
+  # contains 1 and 0 on global grid
+  df <- read_csv(glue("{path_to_occ}/{files[i]}.csv"), show_col_types = FALSE) |>
+    filter(NR==TRUE) |> 
+    select(c("longitude", "latitude", "occ"))  |>
+    left_join(ENV, by = c("longitude", "latitude")) |>
+    mutate(occ = case_when(occ >= 1 ~ 1,
+                           TRUE ~ NA_real_)) |> 
+    drop_na(Temp, Sal, O2, NO3, MLD, Zeu, NPP) |> 
+    plyr::rbind.fill(ENV_NR) |> as_tibble()
+  # number of occ
+  nb <-  nrow(df |> filter(occ==1))
+  
+  
+  #######################################1.  MODEL SETTINGS ################################################
+  print(glue::glue("1.  MODEL SETTINGS"))
+  # Selection criteria defined by (see Jones & Cheung,2011 and Albouy et al, 2011)
+  # Inspiration from T.hattab, C. albouy, F. Bennedeti, F. Guillaumon, M. Oyinlola, R. Maraj, T. Clark, W. Cheung, O. Irisson
+  
+  # SELECTION of  BIOMOD2 models: only models with High power of current projection (SDM) and no power of prediction (ENM).
+  NATIVERG<-c('GLM','GAM','MAXENT.Phillips','RF','FDA','CTA','SRE','ANN')
+  #set number of cores
+  n.cores=16
+  gam_model <- ifelse(nb<44,'GAM_gam',"GAM_mgcv")
+  
+  myBiomodOption <-
+    BIOMOD_ModelingOptions(
+      GBM = list(
+        n.trees = 2500,
+        n.cores = n.cores,
+        n.minobsinnode = 10,
+        train.fraction = 0.7,
+        bag.fraction = 0.5,
+        interaction.depth = 7
+      ),
+      SRE = list(quant = 0.05),
+      ANN =  list(NbCV = 5, maxit = 300),
+      RF = list(ntree = 500),
+      GLM = list(
+        type = 'quadratic',
+        interaction.level = 0,
+        myFormula = NULL,
+        test = 'BIC',
+        family = 'binomial',
+        control = glm.control(
+          epsilon = 1e-08,
+          maxit = 1000,
+          trace = FALSE
+        )
+      ),
+      MAXENT.Phillips  =  list(
+        path_to_maxent.jar = path_to_maxent,
+        memory_allocated = 8192,
+        maximumiterations = 200,
+        visible = FALSE,
+        linear = TRUE,
+        quadratic = TRUE,
+        product = TRUE,
+        threshold = TRUE,
+        hinge = TRUE,
+        lq2lqptthreshold = 80,
+        l2lqthreshold = 10,
+        hingethreshold = 15,
+        beta_threshold = -1,
+        beta_categorical = -1,
+        beta_lqp = -1,
+        beta_hinge = -1,
+        defaultprevalence = 0.5
+      ),
+      GAM = list(
+        algo = gam_model,
+        type = 's_smoother',
+        k = -1,
+        interaction.level = 0,
+        myFormula = NULL,
+        family = binomial(link = 'logit'),
+        method = 'GCV.Cp',
+        optimizer = c('outer', 'newton'),
+        select = FALSE,
+        knots = NULL,
+        paraPen = NULL,
+        control = list(
+          nthreads = 1,
+          irls.reg = 0,
+          epsilon = 1e-07 ,
+          maxit = 200,
+          trace = FALSE,
+          mgcv.tol = 1e-07,
+          mgcv.half = 15,
+          rank.tol = 1.49011611938477e-08,
+          nlm = list(
+            ndigit = 7,
+            gradtol = 1e-06,
+            stepmax = 2,
+            steptol = 1e-04,
+            iterlim = 200,
+            check.analyticals = 0
+          ),
+          optim = list(factr = 1e+07),
+          newton = list(
+            conv.tol = 1e-06,
+            maxNstep = 5,
+            maxSstep = 2,
+            maxHalf = 30,
+            use.svd = 0
+          ),
+          outerPIsteps = 0,
+          idLinksBases = TRUE,
+          scalePenalty = TRUE,
+          efs.lspmax = 15,
+          efs.tol = 0.1,
+          keepData = FALSE,
+          scale.est = "fletcher",
+          edge.correct = FALSE
+        )
+      )
+    )
+  
+  
+  ###################################### 2. MODEL DEFINITION #################################
+  print(glue::glue("2. MODEL DEFINITION"))
+  # Formatting Data for BIOMOD2 (for more info check BIOMOD_FormatingData?)
+  myBiomodData <- BIOMOD_FormatingData(
+    resp.var = SpatialPointsDataFrame(df[, 1:2], df[,3], proj4string = CRS("+proj=longlat +datum=WGS84")),
+    expl.var = SpatialPointsDataFrame(df[, 1:2], df[, -c(1:3)],  proj4string = CRS("+proj=longlat +datum=WGS84")),
+    resp.name = as.character(metainfo$name),
+    PA.nb.rep = 2,
+    PA.nb.absences = nb,
+    PA.strategy = 'random'
+  )
+  # set model parameters
+  data.split.perc = case_when(nb <= 44 ~ 95,
+                              nb <= 200 ~ 80,
+                              nb  > 200 ~ 70)
+  
+  do.full.models = if_else(nb > 44, TRUE, TRUE, missing = NA)
+  nb.rep= case_when(nb <= 44 ~ 2,
+                    nb <= 200 ~ 2,
+                    nb  > 200 ~ 2)
+  ### A. IND MODEL RUN
+  # for opt :  NbRunEval = 3, and VarImport = 3, here put at and 0 to make it faster
+  myBiomodModelOut <- BIOMOD_Modeling(
+    myBiomodData,
+    models = NATIVERG,
+    bm.options = myBiomodOption,
+    nb.rep = nb.rep,
+    data.split.perc = data.split.perc,
+    weights = NULL,
+    var.import = 0,
+    metric.eval = c('ROC', 'TSS'),
+    save.output = TRUE,
+    scale.models = FALSE,
+    do.full.models = do.full.models,  #should be TRUE/ PUT FALSE TO /2 the nb of run
+    modeling.id = sprintf('PROJ_ALLMODEL_SPID_%s', files[i]) # Definition of the name of the FILE and save
+  )
+  
+  ### B. ENSEMBLE MODEL RUN
+  ENSEMBLE <- BIOMOD_EnsembleModeling(
+    bm.mod = myBiomodModelOut,
+    models.chosen = 'all',
+    em.by = 'all',
+    metric.select = c('ROC'),
+    metric.select.thresh = c(0.6),
+    metric.eval = c('TSS', 'ROC'),
+    prob.mean = TRUE,
+    prob.cv = FALSE,
+    prob.ci = FALSE,
+    prob.ci.alpha = 0.05,
+    prob.median = TRUE,
+    committee.averaging = FALSE,
+    prob.mean.weight = TRUE,
+    prob.mean.weight.decay = 'proportional',
+    var.import = 1
+  )
+  
+  ### c. AQUAMAP & NPPEN will be assessed in section 3
+  ###################################### 3. PROJECTION into MESO ENV #################################
+  print(glue::glue("3. PROJECTION into MESO ENV"))
+  # new set of environmental conditions
+  ENV_new<-  MESO |>  drop_na()|> left_join(grid)|>
+    filter(ProvId %in% lapply(stringr::str_split(metainfo$ProvNR, ';'), as.integer)[[1]]) |>
+    drop_na(ProvId) |> 
+    select(-ProvId)
+  # A. COMPUTATION OF BIOMOD MODELS
+  myBiomodProjection <-
+    BIOMOD_Projection(
+      bm.mod = myBiomodModelOut,
+      new.env = ENV_new[, -c(1:2)],
+      new.env.xy = ENV_new[, 1:2],
+      silent = TRUE,
+      proj.name = 'model',
+      models.chosen = 'all',
+      compress  = 'gzip',
+      build.clamping.mask = FALSE
+    )
+  
+  # B. COMPUTATION OF THE ENSEMBLE MODEL
+  ENSEMBLEPROJ <- BIOMOD_EnsembleForecasting(
+    bm.proj = myBiomodProjection,
+    bm.em = ENSEMBLE,
+    compress = 'gzip',
+    nb.cpu = n.cores
+  )
+  
+  # C. AQUAMAP  &   D. NPPEN
+  # get coordinates of points that were used in each run 
+  set<- get_calib_lines(myBiomodModelOut) |> as_tibble()%>%
+    janitor::clean_names("all_caps") |> cbind(df[,1:3]) |> drop_na()
+  run.names=set |> select(starts_with("RUN")) |> colnames() 
+  run.names=c(run.names,"Full_PA1","Full_PA2")
+  PA = cbind(myBiomodData@coord,myBiomodData@PA.table) |> cbind(df[,3]) |> mutate(occ=ifelse(is.na(occ),0,occ)) |> 
+    filter(occ==0)
+  
+  pred=data.frame(ENV_new[,1:2])
+  for (i in 1: length(run.names)){
+    
+    if(run.names[i] %in% c("Full_PA1","Full_PA2")){
+      run=set |> filter(occ==1) |> select(longitude, latitude, occ) |> mutate(run=TRUE)
+    }else{
+      run    = set |> select(longitude, latitude, occ,run.names[i])
+      colnames(run)[4]="run"
+    }  
+    run.type=sub("_.*", "", run.names[i])
+    pa.type=sub(".*_", "", run.names[i])
+    data<- run |> filter(run==TRUE) |> select(-run) |> left_join(ENV, by = c("longitude", "latitude"))
+    myAquaOut <- aquatrap(data[, -c(1:3)], quant = c(0.01, 0.25, 0.75, 0.99))
+    myAquaProjection <- aquatrap_pred(ENV_new[,-c(1:2)], myAquaOut)$yul
+    myNppenProjection <- nppen(df |> filter(occ==1)|> select(-c("longitude", "latitude", "occ", "NPP")),
+                               ENV_new |> select(-c("longitude", "latitude", "NPP")) |> drop_na(),# predict into MESO ENV
+                               fast = TRUE,
+                               cores = n.cores)|> as_tibble()
+    # put predictions on teh same scale as biomod2 (0-1000)
+    pred.run=cbind(ENV_new[,1:2],myAquaProjection*1000,myNppenProjection*1000)
+    
+    col_nameNPPEN=paste0(metainfo$name,"_",pa.type,"_",run.type,"_NPPEN")
+    col_nameAQUAMEAN=paste0(metainfo$name,"_",pa.type,"_",run.type,"_AQUAMEAN")
+    colnames(pred.run)[3:4]=c(col_nameNPPEN,col_nameAQUAMEAN)
+    
+    pred=left_join(pred,pred.run, by = c("longitude", "latitude"))
+  }
+  
+  ###################################### 4. Get Probabilities of Occurrence ########################################
+  print(glue::glue("4. Get Probabilities of Occurrence "))
+  # all probabilities are scaled to 0-1000
+  PROB<- cbind(ENV_new[, 1:2],
+               get_predictions(ENSEMBLEPROJ, as.data.frame =TRUE), # ENSEMBLEpred
+               get_predictions(myBiomodProjection, as.data.frame =TRUE)) |>  # Biomodpred
+    left_join(pred, by = c("longitude", "latitude"))|>  #AQUAMAPpred and #NPPEN pred
+    mutate_all(~replace(., is.nan(.), NA))
+  
+  save(PROB, file = file.prob)
+  
+  
+  ###################################### 5. Evaluation metric TSS, ROC CURVES ##################################################
+  print(glue::glue("5. Evaluation metric TSS, ROC CURVES"))
+  # A. BIOMOD MODELS
+  myBiomodModelEval <- get_evaluations(myBiomodModelOut, as.data.frame = TRUE) 
+  
+  # B. ENSEMBLE
+  myENSEMBLEEval <- get_evaluations(ENSEMBLE, as.data.frame = TRUE) 
+  
+  # C. AQUAMAP  and D. NPPEN
+  # evaluation metric for NPPEN and AQUAMAP
+  metric=data.frame()
+  for (i in 1: length(run.names)){
+    
+    if(run.names[i] %in% c("Full_PA1","Full_PA2")){
+      run=set |> filter(occ==1) |> select(longitude, latitude, occ) |> mutate(run=TRUE)
+    }else{
+      run= set |> select(longitude, latitude, occ,run.names[i])
+      colnames(run)[4]="run"
+    }  
+    run.type=sub("_.*", "", run.names[i])
+    pa.type=sub(".*_", "", run.names[i])
+    pa=PA |>  select(longitude, latitude, occ,all_of(pa.type)) 
+    colnames(pa)[4]="run"
+    data<- rbind(run,pa) |> filter(run==TRUE) |> select(-run) |> left_join(ENV, by = c("longitude", "latitude"))
+    
+    myAquaOut <- aquatrap(data[, -c(1:3)], quant = c(0.01, 0.25, 0.75, 0.99))
+    myAquaProjection <- aquatrap_pred(data[, -c(1:3)], myAquaOut)$yul
+    myNppenProjection <- nppen(df|> filter(occ==1) |> select(-c("longitude", "latitude", "occ", "NPP")),
+                               data |> select(-c("longitude", "latitude", "occ", "NPP")),
+                               fast = TRUE,cores = n.cores)|> as_tibble()
+    # convert predictions to a 0-1000 sclae to be consistent with biomod2
+    data=cbind(data,myAquaProjection*1000,myNppenProjection*1000)
+    boyce.nppen=Boyce(obs = data$occ, pred = data$value, plot = FALSE )$Boyce
+    tss.nppen=bm_FindOptimStat(metric.eval = 'TSS', data$occ, fit = data$value)
+    roc.nppen=bm_FindOptimStat(metric.eval = 'ROC', data$occ, fit = data$value)
+    
+    boyce.aquamap=Boyce(obs = data$occ, pred = data$myAquaProjection, plot = FALSE )$Boyce
+    tss.aquamap=bm_FindOptimStat(metric.eval = 'TSS', data$occ, fit = data$myAquaProjection)
+    roc.aquamap=bm_FindOptimStat(metric.eval = 'ROC', data$occ, fit = data$myAquaProjection)
+    
+    Model.name = c(rep(paste0("NPPEN_",run.names[i]),2), rep(paste0("AQUAMEAN_",run.names[i]),2)) 
+    Algo= c(rep("NPPEN",2),rep("AQUAMEAN",2))
+    Run= c(rep(run.type,4))
+    Dataset=c(rep(pa.type,4))
+    Eval.metric=c(rep(c("ROC","TSS"),2))
+    Boyce=c(rep(boyce.nppen,2),rep(boyce.aquamap,2))
+    eval=rbind(roc.nppen,tss.nppen,roc.aquamap,tss.aquamap) |>as_tibble() |>   janitor::clean_names("upper_camel") |> rename(Testing.data=BestStat)
+    metric.run<- data.frame(Model.name,Algo,Run,Dataset,Eval.metric,eval,Boyce)
+    metric=rbind(metric,metric.run)
+  }
+  
+  # get all models together
+  EVAL <- plyr::rbind.fill(myBiomodModelEval |> mutate(Model=Algo),
+                           myENSEMBLEEval,
+                           metric|> mutate(Model=Algo)) 
+  save(EVAL,file = file.eval)
+  
+  
+  ###################################### 6. Variable Importance  ###################################### 
+  print(glue::glue("6. Variable Importance"))
+  PARAMETER <- get_variables_importance(ENSEMBLE, as.data.frame = TRUE)
+  save(PARAMETER, file = file.param)
+  
+  toc()
+  print(glue::glue("JOB SPID#{files[i]}: {metainfo$name} complete"))
+  
+  sink()
+}
+
+# Stop cluster to free up resources
+# if there were any error: you need to close the Cluster using command below, otherwise code wont run
+stopImplicitCluster()
+
+
+unregister <- function() {
+  env <- foreach:::.foreachGlobals
+  rm(list=ls(name=env), pos=env)
+}
+unregister()
+```
+
+#end

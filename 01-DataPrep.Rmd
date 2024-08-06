@@ -1,0 +1,1235 @@
+---
+title: "Data Preparation Example"
+author: "Yulia E."
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r lib, message=FALSE, warning=FALSE}
+library(worms) # for synonyms devtools::install_github("janhoo/worms")
+library(tidyverse)
+library(rfishbase)
+library(janitor)
+library(glue)
+library(taxize)
+library(tidyverse)
+library(readr)
+library(raster)
+library(stringr)
+library(scales)
+library(robis)
+library(readr)
+library(tidyverse)
+library(tidync)
+library(RANN)
+library(ncdf4)
+`%notin%` <- Negate(`%in%`)
+select=dplyr::select
+rename=dplyr::rename
+filter=dplyr::filter
+summarize=dplyr::summarize
+count=dplyr::count
+group_by=dplyr::group_by
+```
+Example shown for Acanthephyra acanthitelsonis. 
+```{r}
+load("data/occ.Rdata")
+occ
+```
+
+
+# WORMS
+
+```{r , eval=FALSE, include=FALSE}
+# species name
+worms_id_species <- wormsbynames(unique(occ$TAXA_standartize),match = FALSE,chunksize = 100) |> drop_na(AphiaID) |> arrange(valid_name)
+
+species = unique(worms_id_species$valid_name)
+AphiaID= unique(worms_id_species$valid_AphiaID)
+SPID = seq(1,length(species),1)
+
+
+
+occ.mydata <- worms_id_species |> select(TAXA_standartize=scientificname,AcceptedSciName=valid_name) |> 
+ right_join(occ, by="TAXA_standartize")
+occ.mydata
+
+```
+
+
+```{r}
+# get taxonomy for accepted names
+worms_id_species <- wormsbynames(species,chunksize = 100)|> arrange(scientificname)
+META0 <- worms_id_species |> dplyr::select(AphiaID,AcceptedSciName=scientificname,kingdom:genus, isExtinct) |> mutate(species=word(AcceptedSciName,-1))
+META0
+
+```
+
+
+## Synonyms
+
+```{r}
+# get synonym names by AphiaID
+synonyms <- worrms::wm_synonyms_(AphiaID)
+
+if(nrow(synonyms)>0){
+  # select only columns for synonyms
+syn <-
+  synonyms |> select(
+    AphiaID = id,
+    synon_AphiaID = AphiaID,
+    syn.scientificname = scientificname
+  ) |>
+  mutate(AphiaID = as.integer(AphiaID)) |>
+  left_join(META0[, 1:2], by = "AphiaID") |> distinct()
+
+# get synonym names that are same for more than one accepted names 
+duplicated.syn <-
+  syn |> group_by(syn.scientificname) |> 
+  summarize(n = length(unique(AcceptedSciName))) |> 
+  filter(n > 1)
+
+
+# get the final list of synonyms
+syn <- syn |>
+  filter(syn.scientificname %notin% duplicated.syn$syn.scientificname)   |> 
+  # remove rowas where synonym is same as accepted name
+  filter(syn.scientificname != AcceptedSciName) |> 
+  # get synonym that are same as accepted names
+  filter(syn.scientificname %notin% AcceptedSciName) |> arrange(AcceptedSciName)
+
+write_csv(syn, "data/synonyms.csv")
+syn
+}
+
+```
+
+
+
+
+
+# FISHBASE & SELIFEBASE: Ecology
+
+RStudio users can also browse all fish base tables interactively in the RStudio connection browser by using the function `fisbase_pane()`. Note that this function will first download a complete set of the fishbase tables.
+
+
+```{r}
+sp.info <- rbind(
+  fb_tbl("species", server = "sealifebase")  |> dplyr::select(
+      
+      genus = Genus,
+      species = Species,
+      Brack,
+      Saltwater,
+      DemersPelag,
+      DepthRangeShallow,
+      DepthRangeDeep,
+      Length
+    ) |>
+    mutate(FILE = "WormsSealifebase")
+  ,
+  fb_tbl("species", server = "fishbase") |> dplyr::select(
+
+      genus = Genus,
+      species = Species,
+      Brack,
+      Saltwater,
+      DemersPelag,
+      DepthRangeShallow,
+      DepthRangeDeep,
+      Length
+    ) |>
+    mutate(FILE = "WormsFishbase")
+) 
+
+
+META1<- left_join(META0,sp.info,by = c("genus","species")) 
+META1
+```
+
+http://www.fishbase.org/manual/english/fishbasethe_ecology_table.htm
+
+```{r fish.ecol}
+
+fishbase<- ecology(species_list=species, server = getOption("FISHBASE_API", "fishbase"))
+if (nrow(fishbase>0)){
+fishbase<-  fishbase|>  dplyr::select(
+AcceptedSciName=Species,Neritic,Oceanic,Epipelagic:MarshesSwamps,FoodTroph,Pelagic,FoodSeTroph,CoralReefs)
+}
+
+sealifebase<- ecology(species_list=species, server = getOption("FISHBASE_API", "sealifebase"))
+if (nrow(sealifebase)>0){
+sealifebase<-  sealifebase|>  dplyr::select(
+AcceptedSciName=Species,Neritic,Oceanic,Epipelagic:MarshesSwamps,FoodTroph,Pelagic,FoodSeTroph,CoralReefs)
+}
+
+ecology<-bind_rows(sealifebase,fishbase) |> distinct() |> 
+  # remove duplicates in a row
+  group_by(AcceptedSciName)%>%filter(duplicated(AcceptedSciName)|n()==1)
+
+
+META <- left_join( META1, ecology, by="AcceptedSciName")
+META 
+```
+
+# Meso- & Epi- Classificaton
+```{r}
+META <- META |> mutate(SPID= SPID) |> 
+  dplyr::select(SPID,AphiaID, AcceptedSciName,DemersPelag,Epipelagic,Mesopelagic,Pelagic,DepthRangeShallow,DepthRangeDeep,kingdom:genus,species, everything()) 
+
+META
+
+SPECIES = unique(META$AcceptedSciName)
+AphiaID= unique(META$AphiaID)
+SPID = unique(META$SPID)
+
+save(SPECIES, AphiaID, SPID, file="data/spInfo.RData")
+```
+```{r epi-meso}
+EPI_MESO_BATHY_BOUNDARY <- read_csv("data/EPI_MESO_BATHY_BOUNDARY.csv", na = c("", "NA", "NaN"))
+# For each point in occ_mydata, find the nearest neighbor from EPI_MESO_BATHY_BOUNDARY:
+# Give X and then Y (longtitude and then latitude)
+# Note that argument k sets the number of nearest neighbours, here 1 (the closest)
+closest_RANN <- RANN::nn2(data = EPI_MESO_BATHY_BOUNDARY[, c("Lon", "Lat")], 
+                          query = occ.mydata[, c("dec_lon", "dec_lat")], k = 1)
+results_RANN <- cbind(occ.mydata,EPI_MESO_BATHY_BOUNDARY[closest_RANN$nn.idx, ])
+results_RANN
+
+depth.sum <-results_RANN |>  group_by(AcceptedSciName, Lon, Lat) |>
+  summarize(
+    max=max(max_dep,na.rm=TRUE),
+    min=min(min_dep,na.rm=TRUE),      
+    epi_meso=mean(EPI_MESO_BOUNDARY_M,na.rm=TRUE), 
+    meso_bathy=mean(MESO_BATHY_BOUNDARY_M,na.rm=TRUE)) 
+
+
+library(DescTools)
+
+summary <- depth.sum |>  mutate(Epipelagic = c(0, epi_meso) %overlaps% c(min, max),
+                     Mesopelagic = c(epi_meso, meso_bathy) %overlaps% c(min, max))
+summary
+meso.epi.summary <- summary |> group_by(AcceptedSciName)|> 
+  summarize(
+    n= n(),
+    Epipelagic=sum(Epipelagic, na.rm=TRUE),
+    Mesopelagic=sum(Mesopelagic, na.rm=TRUE),
+    DepthRangeShallow = min(min, na.rm=TRUE),
+    DepthRangeDeep = max(max, na.rm=TRUE)) |>  arrange(AcceptedSciName)
+
+meso.epi.summary
+```
+
+## UPDATE META with my data
+```{r}
+META_zoop <- META |> left_join(meso.epi.summary, by="AcceptedSciName") |>  dplyr::select(-n) |> 
+  mutate_at(vars(Epipelagic.x,Mesopelagic.x,Epipelagic.y,Mesopelagic.y,DepthRangeShallow.x, DepthRangeShallow.y , DepthRangeDeep.x, DepthRangeDeep.y), as.numeric) |> 
+  rowwise() |> 
+  mutate(Epipelagic = sum(Epipelagic.x,Epipelagic.y, na.rm=TRUE),
+         Mesopelagic = sum(Mesopelagic.x, Mesopelagic.y , na.rm=TRUE),
+         DepthRangeShallow = min(DepthRangeShallow.x, DepthRangeShallow.y , na.rm=TRUE),
+         DepthRangeDeep = max(DepthRangeDeep.x, DepthRangeDeep.y , na.rm=TRUE)) |> 
+  select(-c(Epipelagic.x,Mesopelagic.x,Epipelagic.y,Mesopelagic.y,DepthRangeShallow.x, DepthRangeShallow.y , DepthRangeDeep.x, DepthRangeDeep.y)) |>
+  
+  
+   
+  mutate(Epipelagic =ifelse(Epipelagic>=1, 1,Epipelagic ),
+         Mesopelagic =ifelse(Mesopelagic>=1, 1,Mesopelagic ),
+         Env = case_when(
+           Epipelagic == 1 & Mesopelagic ==1 ~ "BOTH",
+            Epipelagic == 0 & Mesopelagic ==1 ~ "MESO",
+            Epipelagic == 1 & Mesopelagic ==0 ~ "EPI",
+           TRUE ~"NEITHER"
+         )) |> 
+  select(FILE,SPID:AcceptedSciName,Env,Epipelagic,Mesopelagic,DepthRangeShallow,DepthRangeDeep,kingdom:species, everything()) |>
+           mutate(name = as.character(gsub("[()]", "", AcceptedSciName)),
+                  name = as.character(gsub(" ", ".", name)))
+write_csv(META_zoop,"data/META_zoop.csv") 
+```
+
+
+
+
+
+# Occurance Data
+
+## OBIS Occurance for Accpted Names & Synnonyms 
+
+```{r my_occs, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+#Get occurrences for sole - note that this may take some time to run:
+for (i in 1:length(SPECIES)) {
+  print(paste("Processing", i, "/", length(SPECIES)))
+  my_occs <-
+    robis::occurrence(
+      scientificname = SPECIES[i],
+      fields = c(
+        "scientificName",
+        'aphiaID',
+        'decimalLatitude',
+        'decimalLongitude',
+        'year',
+        'depth',
+        'minimumDepthInMeters',
+        'maximumDepthInMeters'
+      )
+    )
+  write_csv(my_occs, paste0("data/occurance_obis/", SPID[i], ".csv"))
+  rm(my_occs)
+}
+
+
+#Extract occurrence for synonyms
+if(nrow(synonyms)>0){
+  syn.sp <-
+  read_csv("data/synonyms.csv", col_types = cols()) |> select(syn.scientificname, AcceptedSciName) |> distinct() |>
+  left_join(META |> select(AcceptedSciName, SPID), by = "AcceptedSciName") |> drop_na() |> 
+  filter(AcceptedSciName %in% SPECIES)
+
+spp <- unique(syn.sp$AcceptedSciName)
+  
+for (i in 1:length(spp)) {
+  print(paste("Processing", i, "/", length(spp)))
+  syn.name = syn.sp |> filter(AcceptedSciName == spp[i])|> select(syn.scientificname)|> pull()
+  syn.SPID = syn.sp |> filter(AcceptedSciName == spp[i]) |> select(SPID) |> distinct() |> pull()
+  
+  my_occs <- robis::occurrence(
+      scientificname = syn.name,
+      fields = c(
+        "scientificName",
+        'aphiaID',
+        'decimalLatitude',
+        'decimalLongitude',
+        'year',
+        'depth',
+        'minimumDepthInMeters',
+        'maximumDepthInMeters'
+      )
+    )
+  if (is.null(my_occs)==FALSE){
+    if (nrow(my_occs)>0){
+      write_csv(my_occs,paste0("data/occurance_synonym/", syn.SPID, ".csv"))
+      rm(my_occs)
+    } 
+  } 
+  
+}
+}
+
+
+
+# add records from my Mesopelagic Dataset
+my.sp <-occ_mydata |> filter(abun>0, AcceptedSciName %in% SPECIES) |>
+  left_join(META |> select(AcceptedSciName, SPID, AphiaID), by = "AcceptedSciName")|> 
+    select(
+      scientificName = AcceptedSciName,
+      decimalLatitude = dec_lat,
+      decimalLongitude = dec_lon,
+      year,
+      minimumDepthInMeters = min_dep,
+      maximumDepthInMeters = max_dep,
+      SPID,
+      aphiaID=AphiaID)
+
+spp <- unique(my.sp$scientificName)
+
+
+for (i in 1:length(spp)) {
+  print(paste("Processing", i, "/", length(spp)))
+  
+  syn.SPID = my.sp |> filter(scientificName == spp[i]) |> select(SPID) |> distinct() |> pull()
+  my_occs <- my.sp |> filter(scientificName == spp[i])  |> select(-SPID)
+  
+  if (is.null(my_occs)==FALSE){
+    if (nrow(my_occs)>0){
+      write_csv(my_occs,paste0("data/occurance_mydata/", syn.SPID, ".csv"))
+      rm(my_occs)
+    } 
+  } 
+}
+  
+
+
+# bind all the data together
+files1 <- list.files(path='data/occurance_mydata/', pattern="*.csv")
+files2 <- list.files(path='data/occurance_synonym/', pattern="*.csv")
+files3 <- list.files(path='data/occurance_obis/', pattern="*.csv")
+file_meta <-  paste0(SPID,".csv")
+
+for (i in 1:length(file_meta)){
+  print(paste("Processing", i, "/", length(file_meta)))
+  file_i = file_meta[i]
+  
+  if (file_i %in% files1 ==TRUE){
+    df1<- read_csv(paste0("data/occurance_mydata/",file_i),show_col_types = FALSE)
+  }
+  if (file_i %in% files2 ==TRUE){
+    df2<- read_csv(paste0("data/occurance_synonym/",file_i),show_col_types = FALSE)
+  }
+  if (file_i %in% files3 ==TRUE){
+    df3 <- read_csv(paste0("data/occurance_obis/",file_i),show_col_types = FALSE)
+  }
+  
+  if (exists("df1") ==TRUE &  exists("df2") ==TRUE &  exists("df3") ==TRUE ){
+    df= plyr::rbind.fill(df1,df2,df3)
+    rm(df1,df2,df3)
+  }
+  if (exists("df1") ==TRUE &  exists("df2") ==TRUE &  exists("df3") ==FALSE ){
+    df= plyr::rbind.fill(df1,df2)
+    rm(df1,df2)
+  }
+  if (exists("df1") ==TRUE &  exists("df2") ==FALSE &  exists("df3") ==TRUE ){
+    df= plyr::rbind.fill(df1,df3)
+    rm(df1,df3)
+  }
+  if (exists("df1") ==FALSE &  exists("df2") ==TRUE &  exists("df3") ==TRUE ){
+    df= plyr::rbind.fill(df2,df3)
+    rm(df2,df3)
+  }
+  write_csv(df,paste0("data/occurance_data/", file_i))
+}
+```
+
+## Gridded Occurance & Native Range
+
+```{r grid-occ}
+GEO<- read_csv("data/GEO.csv")
+files <- list.files(path='data/occurance_data/', pattern="*.csv")
+grid = GEO[,c("longitude", "latitude","PLand","ProvId","ProvName")]
+
+
+for (i in 1:length(files)) {
+  print(paste("Processing", i, "/", length(files)))
+  
+  data.df <- read_csv(paste0("data/occurance_data/", files[i]),show_col_types = FALSE) |> 
+    select("decimalLongitude","decimalLatitude") |> 
+    mutate(occurance = 1) |>
+    filter(decimalLongitude != 0 | decimalLatitude != 0) |> 
+    drop_na(decimalLongitude, decimalLatitude)
+  
+  # nn2 Uses a kd-tree to find the p number of near neighbours for each point in an input/output dataset. 
+  #The advantage of the kd-tree is that it runs in O(M log M) time
+  closest_RANN <- RANN::nn2(data = grid[, c("longitude", "latitude")], 
+                          query = data.df[, c("decimalLongitude","decimalLatitude")], k = 1)
+  results_RANN <- cbind(data.df, grid[closest_RANN$nn.idx, 1:2])|> 
+  # only leave coordinates from a grid
+  select(-decimalLongitude, -decimalLatitude) |> 
+  group_by(longitude, latitude) |> 
+  dplyr::summarize(occ =sum(occurance, na.rm=TRUE), .groups="drop") 
+
+occur <- left_join(results_RANN, grid, by = c("longitude", "latitude")) |> 
+  # we remove occurence on land 
+  filter(PLand !=1) |> 
+  # only use data from Sutton province
+  drop_na(ProvId)
+
+# filter out occurrences <1% of in the province
+prov.keep<- occur  |> dplyr::group_by(ProvId) |> dplyr::summarise(occ= sum(occ), .groups="drop") |> drop_na(ProvId) |> mutate(perc= occ/sum(occ)*100) |> filter(perc>1) |> pull(ProvId)
+# add column indicating if it is in NR
+occur <- occur |> mutate(NR=case_when(ProvId %in% prov.keep ~ TRUE))
+write_csv(occur, paste0("data/occurance_gridded/", files[i]))
+
+}
+```
+
+# Environmental Data
+
+```{r}
+GEO  <- read_csv("data/GEO.csv")
+GEO 
+# grid coordinates
+grid = GEO[,1:2]
+# create a coordinate grid to fill the woa data ( otehrwise no NAs screw up KNN approach)
+raster_grid <- raster(xmn= -180, ymn= -90, xmx = 180,ymx = 90, resolution = 1, crs= "+proj=longlat +datum=WGS84")
+out <- rasterToPoints(raster_grid) |> as_tibble()
+names(out)= c("lon","lat")
+out
+```
+
+
+## Temerature
+
+World Ocean Atlas 2018  https://www.ncei.noaa.gov/access/world-ocean-atlas-2018/bin/woa18.pl?parameter=t
+Long-term annual mean (1981-2010)	1 degree
+
+```{r}
+path <- "data/woa2018/T/1_woa18_decav81B0_t00_01.nc"
+#nc_data <- nc_open(path) # time lat lon depth
+
+Temp <- tidync::tidync(path) |> 
+  tidync::hyper_tibble() |>  select(lon, lat, depth,t_an ) |>
+  pivot_wider(names_from = 'depth', values_from = "t_an")
+
+data.df = left_join(out ,Temp, by = c("lon", "lat"))
+
+closest_RANN <- RANN::nn2(data  = data.df[, 1:2], 
+                          query = grid[, 1:2],
+                          k = 1)
+df <- cbind(GEO[,c("longitude", "latitude","EPI_MESO_BOUNDARY_M", "MESO_BATHY_BOUNDARY_M") ], data.df[closest_RANN$nn.idx,]) |> select(-lon, -lat)
+
+x = colnames(df[, -c(1:4)]) |> as.numeric()
+
+EPI <- df[, c(1:4)]
+for ( i in 1:nrow(df)){
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i])==TRUE){
+  } else{
+    y = c(0, df$EPI_MESO_BOUNDARY_M[i])
+    y= case_when(y<=100 ~ plyr::round_any(y, 5),
+                 y<=500 ~ plyr::round_any(y, 25),
+                 y<=2000 ~ plyr::round_any(y, 50),
+                 y>2000 ~ plyr::round_any(y, 100))
+  colnames = x[ x >= y[1] & x <= y[2]] |> as.character()
+  env <- df[i, colnames] |>  as.numeric()
+  EPI$Tmean[i]=mean(env, na.rm=TRUE)
+  EPI$Tsd[i] =sd(env, na.rm=TRUE)
+  }
+}
+EPI
+
+MESO <- df[, c(1:4)]
+for ( i in 1:nrow(df)){
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i])==TRUE | is.na(df$MESO_BATHY_BOUNDARY_M[i])==TRUE) {
+  } else {
+  print(i)
+  y = c(df$EPI_MESO_BOUNDARY_M[i],              df$MESO_BATHY_BOUNDARY_M[i])
+      y= case_when(y<=100 ~ plyr::round_any(y, 5),
+                 y<=500 ~ plyr::round_any(y, 25),
+                 y<=2000 ~ plyr::round_any(y, 50),
+                 y>2000 ~ plyr::round_any(y, 100))
+  colnames = x[ x >= y[1] & x <= y[2]] |> as.character()
+  env <- df[i, colnames] |>  as.numeric()
+  MESO$Tmean[i]=mean(env, na.rm=TRUE)
+  MESO$Tsd[i] =sd(env, na.rm=TRUE)
+  }
+}
+MESO
+#save(MESO|> mutate_all(~replace(., is.nan(.), NA)), file="data/Temp_mean_sd.RData")
+
+BOTH = df[, c(1:4)]
+for (i in 1:nrow(df)) {
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i]) == FALSE & is.na(df$MESO_BATHY_BOUNDARY_M[i]) == TRUE) {
+     
+      y = c(0, df$EPI_MESO_BOUNDARY_M[i])
+      y = case_when(
+        y <= 100 ~ plyr::round_any(y, 5),
+        y <= 500 ~ plyr::round_any(y, 25),
+        y <= 2000 ~ plyr::round_any(y, 50),
+        y > 2000 ~ plyr::round_any(y, 100)
+      )
+      colnames = x[x >= y[1] & x <= y[2]] |> as.character()
+      env <- df[i, colnames] |>  as.numeric()
+      BOTH$Tmean[i] = mean(env, na.rm = TRUE)
+      BOTH$Tsd[i] = sd(env, na.rm = TRUE)
+    } 
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i]) == FALSE & is.na(df$MESO_BATHY_BOUNDARY_M[i]) == FALSE) {
+      y = c(0, df$MESO_BATHY_BOUNDARY_M[i])
+      y = case_when(
+        y <= 100 ~ plyr::round_any(y, 5),
+        y <= 500 ~ plyr::round_any(y, 25),
+        y <= 2000 ~ plyr::round_any(y, 50),
+        y > 2000 ~ plyr::round_any(y, 100)
+      )
+      colnames = x[x >= y[1] & x <= y[2]] |> as.character()
+      env <- df[i, colnames] |>  as.numeric()
+      BOTH$Tmean[i] = mean(env, na.rm = TRUE)
+      BOTH$Tsd[i] = sd(env, na.rm = TRUE)
+    }
+    
+
+}
+BOTH
+
+rm(Temp)
+rm(data.df)
+rm(closest_RANN)
+rm(df)
+```
+
+## Salinity
+World Ocean Atlas 2018  https://www.ncei.noaa.gov/access/world-ocean-atlas-2018/bin/woa18.pl?parameter=s
+Long-term annual mean (1981-2010)	1 degree
+
+```{r}
+path <- here::here("data/woa2018/S/woa18_decav_s00_01.nc")
+#nc_data <- nc_open(path) # time lat lon depth
+
+Sal <- tidync::tidync(path) %>% 
+  tidync::hyper_tibble() |>  select(lon, lat, depth,s_an ) |>
+  pivot_wider(names_from = 'depth', values_from = "s_an")
+
+data.df = left_join(out ,Sal, by = c("lon", "lat"))
+closest_RANN <- RANN::nn2(data  = data.df[, 1:2], 
+                          query = grid[, 1:2],
+                          k = 1)
+df <- cbind(GEO[,c("longitude", "latitude","EPI_MESO_BOUNDARY_M", "MESO_BATHY_BOUNDARY_M") ], data.df[closest_RANN$nn.idx,]) |> select(-lon, -lat)
+
+
+x = colnames(df[, -c(1:4)]) |> as.numeric()
+for ( i in 1:nrow(df)){
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i])==TRUE){
+  } else{
+    y = c(0, df$EPI_MESO_BOUNDARY_M[i])
+        y= case_when(y<=100 ~ plyr::round_any(y, 5),
+                 y<=500 ~ plyr::round_any(y, 25),
+                 y<=2000 ~ plyr::round_any(y, 50),
+                 y>2000 ~ plyr::round_any(y, 100))
+  colnames = x[ x >= y[1] & x <= y[2]] |> as.character()
+  env <- df[i, colnames] |>  as.numeric()
+  EPI$Salmean[i]=mean(env, na.rm=TRUE)
+  EPI$Salsd[i] =sd(env, na.rm=TRUE)
+  }
+}
+EPI
+
+
+for ( i in 1:nrow(df)){
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i])==TRUE | is.na(df$MESO_BATHY_BOUNDARY_M[i])==TRUE){
+  } else {
+  y = c(df$EPI_MESO_BOUNDARY_M[i], df$MESO_BATHY_BOUNDARY_M[i])
+      y= case_when(y<=100 ~ plyr::round_any(y, 5),
+                 y<=500 ~ plyr::round_any(y, 25),
+                 y<=2000 ~ plyr::round_any(y, 50),
+                 y>2000 ~ plyr::round_any(y, 100))
+  colnames = x[ x >= y[1] & x <= y[2]] |> as.character()
+  env <- df[i, colnames] |>  as.numeric()
+  MESO$Salmean[i]=mean(env, na.rm=TRUE)
+  MESO$Salsd[i] =sd(env, na.rm=TRUE)
+  }
+}
+MESO
+
+
+for (i in 1:nrow(df)) {
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i]) == FALSE & is.na(df$MESO_BATHY_BOUNDARY_M[i]) == TRUE) {
+     
+      y = c(0, df$EPI_MESO_BOUNDARY_M[i])
+      y = case_when(
+        y <= 100 ~ plyr::round_any(y, 5),
+        y <= 500 ~ plyr::round_any(y, 25),
+        y <= 2000 ~ plyr::round_any(y, 50),
+        y > 2000 ~ plyr::round_any(y, 100)
+      )
+      colnames = x[x >= y[1] & x <= y[2]] |> as.character()
+      env <- df[i, colnames] |>  as.numeric()
+      BOTH$Salmean[i] = mean(env, na.rm = TRUE)
+      BOTH$Salsd[i] = sd(env, na.rm = TRUE)
+    } 
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i]) == FALSE & is.na(df$MESO_BATHY_BOUNDARY_M[i]) == FALSE) {
+      y = c(0, df$MESO_BATHY_BOUNDARY_M[i])
+      y = case_when(
+        y <= 100 ~ plyr::round_any(y, 5),
+        y <= 500 ~ plyr::round_any(y, 25),
+        y <= 2000 ~ plyr::round_any(y, 50),
+        y > 2000 ~ plyr::round_any(y, 100)
+      )
+      colnames = x[x >= y[1] & x <= y[2]] |> as.character()
+      env <- df[i, colnames] |>  as.numeric()
+      BOTH$Salmean[i] = mean(env, na.rm = TRUE)
+      BOTH$Salsd[i] = sd(env, na.rm = TRUE)
+    }
+    
+
+}
+BOTH
+rm(Sal)
+rm(data.df)
+rm(closest_RANN)
+rm(df)
+```
+
+## SiO2
+World Ocean Atlas 2018
+https://www.ncei.noaa.gov/access/world-ocean-atlas-2018/bin/woa18oxnu.pl?parameter=i
+annual mean	1 degree
+
+```{r}
+path <- here::here("data/woa2018/SiO2/woa18_all_i00_01.nc")
+#nc_data <- nc_open(path) # time lat lon depth
+
+SiO2 <- tidync::tidync(path) %>% 
+  tidync::hyper_tibble() |>  select(lon, lat, depth,i_an ) |>
+  pivot_wider(names_from = 'depth', values_from = "i_an")
+
+data.df = left_join(out ,SiO2, by = c("lon", "lat"))
+closest_RANN <- RANN::nn2(data  = data.df[, 1:2], 
+                          query = grid[, 1:2],
+                          k = 1)
+df <- cbind(GEO[,c("longitude", "latitude","EPI_MESO_BOUNDARY_M", "MESO_BATHY_BOUNDARY_M") ], data.df[closest_RANN$nn.idx,]) |> select(-lon, -lat)
+
+
+x = colnames(df[, -c(1:4)]) |> as.numeric()
+for ( i in 1:nrow(df)){
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i])==TRUE){
+  } else{
+    y = c(0, df$EPI_MESO_BOUNDARY_M[i])
+        y= case_when(y<=100 ~ plyr::round_any(y, 5),
+                 y<=500 ~ plyr::round_any(y, 25),
+                 y<=2000 ~ plyr::round_any(y, 50),
+                 y>2000 ~ plyr::round_any(y, 100))
+  colnames = x[ x >= y[1] & x <= y[2]] |> as.character()
+  env <- df[i, colnames] |>  as.numeric()
+  EPI$SiO2mean[i]=mean(env, na.rm=TRUE)
+  EPI$SiO2sd[i] =sd(env, na.rm=TRUE)
+  }
+}
+EPI
+
+
+for ( i in 1:nrow(df)){
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i])==TRUE | is.na(df$MESO_BATHY_BOUNDARY_M[i])==TRUE){
+  } else {
+  y = c(df$EPI_MESO_BOUNDARY_M[i], df$MESO_BATHY_BOUNDARY_M[i])
+      y= case_when(y<=100 ~ plyr::round_any(y, 5),
+                 y<=500 ~ plyr::round_any(y, 25),
+                 y<=2000 ~ plyr::round_any(y, 50),
+                 y>2000 ~ plyr::round_any(y, 100))
+  colnames = x[ x >= y[1] & x <= y[2]] |> as.character()
+  env <- df[i, colnames] |>  as.numeric()
+  MESO$SiO2mean[i]=mean(env, na.rm=TRUE)
+  MESO$SiO2sd[i] =sd(env, na.rm=TRUE)
+  }
+}
+MESO
+
+
+for (i in 1:nrow(df)) {
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i]) == FALSE & is.na(df$MESO_BATHY_BOUNDARY_M[i]) == TRUE) {
+     
+      y = c(0, df$EPI_MESO_BOUNDARY_M[i])
+      y = case_when(
+        y <= 100 ~ plyr::round_any(y, 5),
+        y <= 500 ~ plyr::round_any(y, 25),
+        y <= 2000 ~ plyr::round_any(y, 50),
+        y > 2000 ~ plyr::round_any(y, 100)
+      )
+      colnames = x[x >= y[1] & x <= y[2]] |> as.character()
+      env <- df[i, colnames] |>  as.numeric()
+      BOTH$SiO2mean[i] = mean(env, na.rm = TRUE)
+      BOTH$SiO2sd[i] = sd(env, na.rm = TRUE)
+    } 
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i]) == FALSE & is.na(df$MESO_BATHY_BOUNDARY_M[i]) == FALSE) {
+      y = c(0, df$MESO_BATHY_BOUNDARY_M[i])
+      y = case_when(
+        y <= 100 ~ plyr::round_any(y, 5),
+        y <= 500 ~ plyr::round_any(y, 25),
+        y <= 2000 ~ plyr::round_any(y, 50),
+        y > 2000 ~ plyr::round_any(y, 100)
+      )
+      colnames = x[x >= y[1] & x <= y[2]] |> as.character()
+      env <- df[i, colnames] |>  as.numeric()
+      BOTH$SiO2mean[i] = mean(env, na.rm = TRUE)
+      BOTH$SiO2sd[i] = sd(env, na.rm = TRUE)
+    }
+    
+
+}
+BOTH
+rm(SiO2)
+rm(data.df)
+rm(closest_RANN)
+rm(df)
+```
+
+## PO4
+World Ocean Atlas 2018
+https://www.ncei.noaa.gov/access/world-ocean-atlas-2018/bin/woa18oxnu.pl?parameter=p
+annual mean	1 degree
+
+```{r}
+path <-here::here("data/woa2018/PO4/woa18_all_p00_01.nc")
+#nc_data <- nc_open(path) # time lat lon depth
+
+PO4 <- tidync::tidync(path) %>% 
+  tidync::hyper_tibble() |>  select(lon, lat, depth,p_an ) |>
+  pivot_wider(names_from = 'depth', values_from = "p_an")
+
+data.df = left_join(out ,PO4, by = c("lon", "lat"))
+closest_RANN <- RANN::nn2(data  = data.df[, 1:2], 
+                          query = grid[, 1:2],
+                          k = 1)
+df <- cbind(GEO[,c("longitude", "latitude","EPI_MESO_BOUNDARY_M", "MESO_BATHY_BOUNDARY_M") ], data.df[closest_RANN$nn.idx,]) |> select(-lon, -lat)
+
+
+x = colnames(df[, -c(1:4)]) |> as.numeric()
+for ( i in 1:nrow(df)){
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i])==TRUE){
+  } else{
+    y = c(0, df$EPI_MESO_BOUNDARY_M[i])
+        y= case_when(y<=100 ~ plyr::round_any(y, 5),
+                 y<=500 ~ plyr::round_any(y, 25),
+                 y<=2000 ~ plyr::round_any(y, 50),
+                 y>2000 ~ plyr::round_any(y, 100))
+  colnames = x[ x >= y[1] & x <= y[2]] |> as.character()
+  env <- df[i, colnames] |>  as.numeric()
+  EPI$PO4mean[i]=mean(env, na.rm=TRUE)
+  EPI$PO4sd[i] =sd(env, na.rm=TRUE)
+  }
+}
+EPI
+
+
+for ( i in 1:nrow(df)){
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i])==TRUE | is.na(df$MESO_BATHY_BOUNDARY_M[i])==TRUE){
+  } else {
+  y = c(df$EPI_MESO_BOUNDARY_M[i], df$MESO_BATHY_BOUNDARY_M[i])
+      y= case_when(y<=100 ~ plyr::round_any(y, 5),
+                 y<=500 ~ plyr::round_any(y, 25),
+                 y<=2000 ~ plyr::round_any(y, 50),
+                 y>2000 ~ plyr::round_any(y, 100))
+  colnames = x[ x >= y[1] & x <= y[2]] |> as.character()
+  env <- df[i, colnames] |>  as.numeric()
+  MESO$PO4mean[i]=mean(env, na.rm=TRUE)
+  MESO$PO4sd[i] =sd(env, na.rm=TRUE)
+  }
+}
+MESO
+
+
+for (i in 1:nrow(df)) {
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i]) == FALSE & is.na(df$MESO_BATHY_BOUNDARY_M[i]) == TRUE) {
+     
+      y = c(0, df$EPI_MESO_BOUNDARY_M[i])
+      y = case_when(
+        y <= 100 ~ plyr::round_any(y, 5),
+        y <= 500 ~ plyr::round_any(y, 25),
+        y <= 2000 ~ plyr::round_any(y, 50),
+        y > 2000 ~ plyr::round_any(y, 100)
+      )
+      colnames = x[x >= y[1] & x <= y[2]] |> as.character()
+      env <- df[i, colnames] |>  as.numeric()
+      BOTH$PO4mean[i] = mean(env, na.rm = TRUE)
+      BOTH$PO4sd[i] = sd(env, na.rm = TRUE)
+    } 
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i]) == FALSE & is.na(df$MESO_BATHY_BOUNDARY_M[i]) == FALSE) {
+      y = c(0, df$MESO_BATHY_BOUNDARY_M[i])
+      y = case_when(
+        y <= 100 ~ plyr::round_any(y, 5),
+        y <= 500 ~ plyr::round_any(y, 25),
+        y <= 2000 ~ plyr::round_any(y, 50),
+        y > 2000 ~ plyr::round_any(y, 100)
+      )
+      colnames = x[x >= y[1] & x <= y[2]] |> as.character()
+      env <- df[i, colnames] |>  as.numeric()
+      BOTH$PO4mean[i] = mean(env, na.rm = TRUE)
+      BOTH$PO4sd[i] = sd(env, na.rm = TRUE)
+    }
+    
+
+}
+BOTH
+rm(PO4)
+rm(data.df)
+rm(closest_RANN)
+rm(df)
+```
+
+## O2
+World Ocean Atlas 2018
+https://www.ncei.noaa.gov/access/world-ocean-atlas-2018/bin/woa18oxnu.pl?parameter=o
+annual mean	1 degree
+
+```{r}
+path <- here::here("data/woa2018/O2/woa18_all_o00_01.nc")
+#nc_data <- nc_open(path) # time lat lon depth
+
+O2 <- tidync::tidync(path) %>% 
+  tidync::hyper_tibble() |>  select(lon, lat, depth,o_an ) |>
+  pivot_wider(names_from = 'depth', values_from = "o_an")
+
+data.df = left_join(out ,O2, by = c("lon", "lat"))
+closest_RANN <- RANN::nn2(data  = data.df[, 1:2], 
+                          query = grid[, 1:2],
+                          k = 1)
+df <- cbind(GEO[,c("longitude", "latitude","EPI_MESO_BOUNDARY_M", "MESO_BATHY_BOUNDARY_M") ], data.df[closest_RANN$nn.idx,]) |> select(-lon, -lat)
+
+
+x = colnames(df[, -c(1:4)]) |> as.numeric()
+for ( i in 1:nrow(df)){
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i])==TRUE){
+  } else{
+    y = c(0, df$EPI_MESO_BOUNDARY_M[i])
+        y= case_when(y<=100 ~ plyr::round_any(y, 5),
+                 y<=500 ~ plyr::round_any(y, 25),
+                 y<=2000 ~ plyr::round_any(y, 50),
+                 y>2000 ~ plyr::round_any(y, 100))
+  colnames = x[ x >= y[1] & x <= y[2]] |> as.character()
+  env <- df[i, colnames] |>  as.numeric()
+  EPI$O2mean[i]=mean(env, na.rm=TRUE)
+  EPI$O2sd[i] =sd(env, na.rm=TRUE)
+  }
+}
+EPI
+
+
+for ( i in 1:nrow(df)){
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i])==TRUE | is.na(df$MESO_BATHY_BOUNDARY_M[i])==TRUE){
+  } else {
+  y = c(df$EPI_MESO_BOUNDARY_M[i], df$MESO_BATHY_BOUNDARY_M[i])
+      y= case_when(y<=100 ~ plyr::round_any(y, 5),
+                 y<=500 ~ plyr::round_any(y, 25),
+                 y<=2000 ~ plyr::round_any(y, 50),
+                 y>2000 ~ plyr::round_any(y, 100))
+  colnames = x[ x >= y[1] & x <= y[2]] |> as.character()
+  env <- df[i, colnames] |>  as.numeric()
+  MESO$O2mean[i]=mean(env, na.rm=TRUE)
+  MESO$O2sd[i] =sd(env, na.rm=TRUE)
+  }
+}
+MESO
+
+
+
+for (i in 1:nrow(df)) {
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i]) == FALSE & is.na(df$MESO_BATHY_BOUNDARY_M[i]) == TRUE) {
+     
+      y = c(0, df$EPI_MESO_BOUNDARY_M[i])
+      y = case_when(
+        y <= 100 ~ plyr::round_any(y, 5),
+        y <= 500 ~ plyr::round_any(y, 25),
+        y <= 2000 ~ plyr::round_any(y, 50),
+        y > 2000 ~ plyr::round_any(y, 100)
+      )
+      colnames = x[x >= y[1] & x <= y[2]] |> as.character()
+      env <- df[i, colnames] |>  as.numeric()
+      BOTH$O2mean[i] = mean(env, na.rm = TRUE)
+      BOTH$O2sd[i] = sd(env, na.rm = TRUE)
+    } 
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i]) == FALSE & is.na(df$MESO_BATHY_BOUNDARY_M[i]) == FALSE) {
+      y = c(0, df$MESO_BATHY_BOUNDARY_M[i])
+      y = case_when(
+        y <= 100 ~ plyr::round_any(y, 5),
+        y <= 500 ~ plyr::round_any(y, 25),
+        y <= 2000 ~ plyr::round_any(y, 50),
+        y > 2000 ~ plyr::round_any(y, 100)
+      )
+      colnames = x[x >= y[1] & x <= y[2]] |> as.character()
+      env <- df[i, colnames] |>  as.numeric()
+      BOTH$O2mean[i] = mean(env, na.rm = TRUE)
+      BOTH$O2sd[i] = sd(env, na.rm = TRUE)
+    }
+    
+
+}
+BOTH
+rm(O2)
+rm(data.df)
+rm(closest_RANN)
+rm(df)
+```
+
+## NO3
+World Ocean Atlas 2018
+https://www.ncei.noaa.gov/access/world-ocean-atlas-2018/bin/woa18oxnu.pl?parameter=n
+annual mean	1 degree
+
+```{r}
+path <- here::here("data/woa2018/NO3/woa18_all_n00_01.nc")
+#nc_data <- nc_open(path) # time lat lon depth
+
+NO3 <- tidync::tidync(path) %>% 
+  tidync::hyper_tibble() |>  select(lon, lat, depth,n_an ) |>
+  pivot_wider(names_from = 'depth', values_from = "n_an")
+
+data.df = left_join(out ,NO3, by = c("lon", "lat"))
+closest_RANN <- RANN::nn2(data  = data.df[, 1:2], 
+                          query = grid[, 1:2],
+                          k = 1)
+df <- cbind(GEO[,c("longitude", "latitude","EPI_MESO_BOUNDARY_M", "MESO_BATHY_BOUNDARY_M") ], data.df[closest_RANN$nn.idx,]) |> select(-lon, -lat)
+
+
+x = colnames(df[, -c(1:4)]) |> as.numeric()
+for ( i in 1:nrow(df)){
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i])==TRUE){
+  } else{
+    y = c(0, df$EPI_MESO_BOUNDARY_M[i])
+        y= case_when(y<=100 ~ plyr::round_any(y, 5),
+                 y<=500 ~ plyr::round_any(y, 25),
+                 y<=2000 ~ plyr::round_any(y, 50),
+                 y>2000 ~ plyr::round_any(y, 100))
+  colnames = x[ x >= y[1] & x <= y[2]] |> as.character()
+  env <- df[i, colnames] |>  as.numeric()
+  EPI$NO3mean[i]=mean(env, na.rm=TRUE)
+  EPI$NO3sd[i] =sd(env, na.rm=TRUE)
+  }
+}
+EPI
+
+
+for ( i in 1:nrow(df)){
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i])==TRUE | is.na(df$MESO_BATHY_BOUNDARY_M[i])==TRUE){
+  } else {
+  y = c(df$EPI_MESO_BOUNDARY_M[i], df$MESO_BATHY_BOUNDARY_M[i])
+      y= case_when(y<=100 ~ plyr::round_any(y, 5),
+                 y<=500 ~ plyr::round_any(y, 25),
+                 y<=2000 ~ plyr::round_any(y, 50),
+                 y>2000 ~ plyr::round_any(y, 100))
+  colnames = x[ x >= y[1] & x <= y[2]] |> as.character()
+  env <- df[i, colnames] |>  as.numeric()
+  MESO$NO3mean[i]=mean(env, na.rm=TRUE)
+  MESO$NO3sd[i] =sd(env, na.rm=TRUE)
+  }
+}
+MESO
+
+
+
+for (i in 1:nrow(df)) {
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i]) == FALSE & is.na(df$MESO_BATHY_BOUNDARY_M[i]) == TRUE) {
+     
+      y = c(0, df$EPI_MESO_BOUNDARY_M[i])
+      y = case_when(
+        y <= 100 ~ plyr::round_any(y, 5),
+        y <= 500 ~ plyr::round_any(y, 25),
+        y <= 2000 ~ plyr::round_any(y, 50),
+        y > 2000 ~ plyr::round_any(y, 100)
+      )
+      colnames = x[x >= y[1] & x <= y[2]] |> as.character()
+      env <- df[i, colnames] |>  as.numeric()
+      BOTH$NO3mean[i] = mean(env, na.rm = TRUE)
+      BOTH$NO3sd[i] = sd(env, na.rm = TRUE)
+    } 
+  if (is.na(df$EPI_MESO_BOUNDARY_M[i]) == FALSE & is.na(df$MESO_BATHY_BOUNDARY_M[i]) == FALSE) {
+      y = c(0, df$MESO_BATHY_BOUNDARY_M[i])
+      y = case_when(
+        y <= 100 ~ plyr::round_any(y, 5),
+        y <= 500 ~ plyr::round_any(y, 25),
+        y <= 2000 ~ plyr::round_any(y, 50),
+        y > 2000 ~ plyr::round_any(y, 100)
+      )
+      colnames = x[x >= y[1] & x <= y[2]] |> as.character()
+      env <- df[i, colnames] |>  as.numeric()
+      BOTH$NO3mean[i] = mean(env, na.rm = TRUE)
+      BOTH$NO3sd[i] = sd(env, na.rm = TRUE)
+    }
+    
+
+}
+BOTH
+rm(NO3)
+rm(data.df)
+rm(closest_RANN)
+rm(df)
+```
+
+## MLD
+World Ocean Atlas 2018
+https://www.ncei.noaa.gov/access/world-ocean-atlas-2018/bin/woa18.pl?parameter=M
+Long-term annual mean (1981-2010)	1 degree
+
+```{r}
+path <- here::here("data/woa2018/MLD/woa18_decav81B0_M0200_01.nc")
+#nc_data <- nc_open(path) # time lat lon depth
+
+MLD <- tidync::tidync(path) %>% 
+  tidync::hyper_tibble() |>  select(lon, lat, depth,M_an ) |>
+  pivot_wider(names_from = 'depth', values_from = "M_an")
+
+data.df = left_join(out ,MLD, by = c("lon", "lat"))
+closest_RANN <- RANN::nn2(data  = data.df[, 1:2], 
+                          query = grid[, 1:2],
+                          k = 1)
+MLD <- cbind(GEO[,c("longitude", "latitude") ], data.df[closest_RANN$nn.idx,]) |> 
+  select(-lon, -lat) |> rename(MLDmean = `0`)
+
+EPI<- left_join(EPI, MLD, by = c("longitude", "latitude"))
+MESO<- left_join(MESO,MLD, by = c("longitude", "latitude"))
+BOTH <-left_join(BOTH, MLD, by = c("longitude", "latitude"))
+
+rm(MLD)
+rm(data.df)
+rm(closest_RANN)
+rm(df)
+```
+
+## Zeu & NPP
+NPP: GDFL ESM4 	Long-term annual mean (1996-2015)	9 km
+
+Zeu Aqua/MODIS Level-3 Mapped Euphotic Depth Data Version 2018 https://hermes.acri.fr/index.php?class=archive
+Long-term annual mean (1997-2022)	4 km
+
+```{r}
+load("data/GFDL-ESM4_ssp126_EQ720_REFPERIOD_1996_2015.RDATA")
+rm(BOT)
+rm(COOEQ720)
+ZeuNPP<- cbind(GEO[,1:2], SURF |>  as_tibble() |> select(Zeu, NPP))
+
+EPI<- left_join(EPI, ZeuNPP, by = c("longitude", "latitude"))
+MESO<- left_join(MESO, ZeuNPP, by = c("longitude", "latitude"))
+BOTH<- left_join(BOTH, ZeuNPP, by = c("longitude", "latitude"))
+```
+
+## Remove all NAN from the environemntal data
+```{r}
+EPI <- EPI |> mutate_all(~replace(., is.nan(.), NA))
+MESO <- MESO |> mutate_all(~replace(., is.nan(.), NA))
+BOTH <- BOTH |> mutate_all(~replace(., is.nan(.), NA))
+```
+
+```{r}
+EPI <- EPI |> select(longitude, latitude, ends_with("mean"),Zeu,NPP) |> 
+  rename(Temp=Tmean,Sal=Salmean,SiO2=SiO2mean,PO4=PO4mean,O2=O2mean,NO3=NO3mean,MLD=MLDmean)
+MESO <- MESO  |> select(longitude, latitude, ends_with("mean"),Zeu,NPP) |> 
+  rename(Temp=Tmean,Sal=Salmean,SiO2=SiO2mean,PO4=PO4mean,O2=O2mean,NO3=NO3mean,MLD=MLDmean)
+BOTH <- BOTH  |> select(longitude, latitude, ends_with("mean"),Zeu,NPP) |> 
+  rename(Temp=Tmean,Sal=Salmean,SiO2=SiO2mean,PO4=PO4mean,O2=O2mean,NO3=NO3mean,MLD=MLDmean)
+```
+
+## Multicolinearity of ENV
+
+
+```{r}
+env=MESO[,-c(1:2)] |> drop_na()
+M<-cor(env)
+# mat : is a matrix of data
+# ... : further arguments to pass to the native R cor.test function
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(mat)
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+# matrix of the p-value of the correlation
+p.mat <- cor.mtest(env)
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+meso.cor<- corrplot::corrplot(M, method="color", col=col(200),  
+         type="upper", order="hclust", 
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         # Combine with significance
+         p.mat = p.mat, sig.level = 0.01, insig = "blank", 
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE 
+         )
+```
+
+## VIF
+
+approach to detect multicollinearity is to see whether two variables are closely related enough that one will inflate the variance of the other in a regression model. For a description of the Variance Inflation Factor (VIF), see <https://newonlinecourses.science.psu.edu/stat501/node/347/>. The  variance inflation factor for the kth predictor is calculated as  $VIF_k=\frac{1}{1-R^2_k}$, where $R^2_k$ is the $R^2$ "obtained by  regressing the kth predictor on the remaining predictors." An  apparently equivalent method (confirmed by checking a handful of the VIFs as calculated above) is to regress a random variable on all thepredictors, using the function car::vif to extract the VIF for allvariables. We get the following VIFs:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+set.seed(1123) # to generate same random seed
+vmod<- round(car::vif(lm(rnorm(nrow(env)) ~ ., data=env)), 2)
+vmod
+
+env_dropped<- env |> select( -PO4,-SiO2)
+vmod_dropped<- round(car::vif(lm(rnorm(nrow(env_dropped)) ~ ., data=env_dropped)), 2)
+vmod_dropped
+```
+Knekta and Field describe that values below 10 are considered acceptable;
+
+```{r}
+env=BOTH[,-c(1:2)] |> drop_na()
+M<-cor(env)
+# mat : is a matrix of data
+# ... : further arguments to pass to the native R cor.test function
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(mat)
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+# matrix of the p-value of the correlation
+p.mat <- cor.mtest(env)
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+both.cor<- corrplot::corrplot(M, method="color", col=col(200),  
+         type="upper", order="hclust", 
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         # Combine with significance
+         p.mat = p.mat, sig.level = 0.01, insig = "blank", 
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE 
+         )
+```
+
+##  save final set of ENV Variables
+```{r}
+EPI <- EPI |> select(-PO4,-SiO2) 
+MESO <- MESO  |> select(-PO4,-SiO2)  
+BOTH <- BOTH  |> select(-PO4,-SiO2) 
+save(EPI, MESO,BOTH, file="data/ENV.RData")
+```
+
+# Update META
+
+to include info of number of observations that have complete set of environmental variables
+
+##  META file to get the ModelStatus
+
+```{r model-status,eval=FALSE, include=FALSE}
+# get ModelStatus and number of occurrences per row
+META_zoop$Nocc = NA
+META_zoop$NoccNR =NA
+META_zoop$ProvNR =NA
+# get SPID
+files= c(META_zoop$SPID)
+
+for (i in 1:length(files)) {
+  metainfo <- META_zoop |> filter(SPID %in% files[i])
+  # select ENV variables
+  if (metainfo$Env == "BOTH"){ENV = BOTH}
+  if (metainfo$Env == "EPI" ){ENV = EPI }
+  if (metainfo$Env == "MESO"){ENV = MESO}
+  if (metainfo$Env == "NEITHER"){ENV =  MESO |> select(longitude, latitude)}
+  # read in data
+  df <- read_csv(glue("data/occurance_gridded/{files[i]}.csv"), show_col_types = FALSE)
+   if (nrow(df)==0) {
+     META_zoop[META_zoop[, 'SPID'] == files[i], 'Nocc'] <- 0
+   } else {
+       df<- df |>  select(c("longitude", "latitude", "occ", "ProvId"))  |>
+         right_join(ENV, by = c("longitude", "latitude")) |> 
+    mutate(occ = case_when(occ >= 1 ~ 1,
+                           TRUE ~ NA_real_)) |> 
+    drop_na()
+        META_zoop[META_zoop[, 'SPID'] == files[i], 'Nocc'] <- nrow(df)
+   }
+  
+   dfNR <- read_csv(glue("data/occurance_gridded/{files[i]}.csv"), show_col_types = FALSE) |> filter(NR==TRUE)
+   
+   if (nrow(dfNR)==0) {
+     META_zoop[META_zoop[, 'SPID'] == files[i], 'NoccNR'] <- 0
+   } else {
+        dfNR<-  dfNR |>  select(c("longitude", "latitude", "occ", "ProvId"))  |>
+         right_join(ENV, by = c("longitude", "latitude")) |> 
+    mutate(occ = case_when(occ >= 1 ~ 1,
+                           TRUE ~ NA_real_)) |> 
+    drop_na()
+ 
+  META_zoop[META_zoop[, 'SPID'] == files[i], 'NoccNR'] <- nrow(dfNR)
+  META_zoop[META_zoop[, 'SPID'] == files[i], 'ProvNR'] <- paste(unique(dfNR$ProvId), collapse = ';')
+     }
+}
+
+META_zoop <- META_zoop |> 
+  mutate(ModelStatus = case_when(Nocc == 0 ~ "NoEval",
+                                 Nocc <= 8 ~ "RecordsOnly",
+                                 Nocc  > 8 ~ "SDM")) |> 
+  mutate(ModelStatusNR = case_when(NoccNR == 0 ~ "NoEval",
+                                   NoccNR <= 8 ~ "RecordsOnly",
+                                   NoccNR  > 8~ "SDM")) 
+
+write_csv(META_zoop, "data/META_zoop_example.csv")
+# summary of ModelStatus and ENV
+META_zoop |> janitor::tabyl(ModelStatus, Env) |> janitor::adorn_totals(c("row","col"))
+META_zoop |> janitor::tabyl(ModelStatusNR, Env)|> janitor::adorn_totals(c("row","col"))
+META_zoop
+```
+
+
+
+
+

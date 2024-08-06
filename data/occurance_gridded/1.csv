@@ -1,0 +1,102 @@
+longitude,latitude,occ,PLand,ProvId,ProvName,NR
+-97.25,22.53066,1,0,23,Gulf of Mexico,TRUE
+-96.25,22.53066,1,0,23,Gulf of Mexico,TRUE
+-96.25,26.93581,1,0,23,Gulf of Mexico,TRUE
+-95.75,27.49808,1,0,23,Gulf of Mexico,TRUE
+-94.75,26.37634,1,0,23,Gulf of Mexico,TRUE
+-93.75,19.31838,1,0,23,Gulf of Mexico,TRUE
+-93.25,24.16451,1,0,23,Gulf of Mexico,TRUE
+-92.75,20.38157,1,0,23,Gulf of Mexico,TRUE
+-91.75,27.49808,1,0,23,Gulf of Mexico,TRUE
+-91.25,25.26539,1,0,23,Gulf of Mexico,TRUE
+-91.25,26.93581,1,0,23,Gulf of Mexico,TRUE
+-90.75,23.61765,1,0,23,Gulf of Mexico,TRUE
+-90.25,25.81956,1,0,23,Gulf of Mexico,TRUE
+-89.75,24.16451,1,0,23,Gulf of Mexico,TRUE
+-89.75,25.81956,1,0,23,Gulf of Mexico,TRUE
+-89.75,27.49808,1,0,23,Gulf of Mexico,TRUE
+-89.25,23.61765,2,0,23,Gulf of Mexico,TRUE
+-89.25,24.71373,1,0,23,Gulf of Mexico,TRUE
+-88.25,27.49808,1,0,23,Gulf of Mexico,TRUE
+-87.75,26.37634,1,0,23,Gulf of Mexico,TRUE
+-87.25,25.81956,1,0,23,Gulf of Mexico,TRUE
+-87.25,29.2026,1,0,23,Gulf of Mexico,TRUE
+-86.75,24.16451,1,0,23,Gulf of Mexico,TRUE
+-85.75,26.93581,4,0,23,Gulf of Mexico,TRUE
+-84.75,26.93581,2,0,23,Gulf of Mexico,TRUE
+-82.75,23.07305,1,0.43037,23,Gulf of Mexico,TRUE
+-65.75,11.53204,2,0,24,Central North Atlantic,TRUE
+-65.25,11.53204,1,0,24,Central North Atlantic,TRUE
+-64.75,11.53204,1,0,24,Central North Atlantic,TRUE
+-57.75,8.99116,1,0,24,Central North Atlantic,TRUE
+-53.25,8.99116,2,0,24,Central North Atlantic,TRUE
+-51.25,8.99116,1,0,24,Central North Atlantic,TRUE
+-49.25,8.99116,3,0,24,Central North Atlantic,TRUE
+-48.75,7.98007,1,0,24,Central North Atlantic,TRUE
+-46.75,8.99116,1,0,24,Central North Atlantic,TRUE
+-46.25,8.99116,1,0,24,Central North Atlantic,TRUE
+-45.75,7.47548,1,0,24,Central North Atlantic,TRUE
+-44.75,0.95427,1,0,27,Tropical and West Equatorial Atlantic,TRUE
+-43.75,8.99116,2,0,24,Central North Atlantic,TRUE
+-42.25,11.02219,1,0,24,Central North Atlantic,TRUE
+-41.75,11.02219,1,0,24,Central North Atlantic,TRUE
+-40.75,8.99116,2,0,24,Central North Atlantic,TRUE
+-40.75,9.49775,3,0,24,Central North Atlantic,TRUE
+-40.25,11.02219,2,0,24,Central North Atlantic,TRUE
+-28.75,-2.54664,1,0,27,Tropical and West Equatorial Atlantic,TRUE
+-27.75,-1.54598,2,0,27,Tropical and West Equatorial Atlantic,TRUE
+-27.75,-0.04578,1,0,27,Tropical and West Equatorial Atlantic,TRUE
+-27.75,0.45423,1,0,27,Tropical and West Equatorial Atlantic,TRUE
+-27.25,16.6894,1,0,24,Central North Atlantic,TRUE
+-27.25,17.73631,1,0,24,Central North Atlantic,TRUE
+-26.75,15.64819,1,0,24,Central North Atlantic,TRUE
+-26.75,16.6894,1,0,24,Central North Atlantic,TRUE
+-26.25,14.61225,1,0,24,Central North Atlantic,TRUE
+-25.75,13.58118,2,0,24,Central North Atlantic,TRUE
+-25.25,1.45439,1,0,27,Tropical and West Equatorial Atlantic,TRUE
+-25.25,14.61225,1,0,26,Mauritania/Cape Verde,TRUE
+-25.25,17.73631,7,0,26,Mauritania/Cape Verde,TRUE
+-25.25,18.26205,2,0,26,Mauritania/Cape Verde,TRUE
+-25.25,18.78939,1,0,26,Mauritania/Cape Verde,TRUE
+-24.75,-2.04623,1,0,27,Tropical and West Equatorial Atlantic,TRUE
+-24.75,12.04282,1,0,26,Mauritania/Cape Verde,TRUE
+-24.25,18.78939,1,0,26,Mauritania/Cape Verde,TRUE
+-22.75,20.38157,1,0,26,Mauritania/Cape Verde,TRUE
+-22.25,16.6894,1,0,26,Mauritania/Cape Verde,TRUE
+-20.75,16.16811,1,0,26,Mauritania/Cape Verde,TRUE
+-20.25,11.02219,1,0,26,Mauritania/Cape Verde,TRUE
+-19.75,10.51322,2,0,26,Mauritania/Cape Verde,TRUE
+-19.75,11.02219,13,0,26,Mauritania/Cape Verde,TRUE
+-16.25,8.99116,1,0,27,Tropical and West Equatorial Atlantic,TRUE
+-12.25,-4.55061,2,0,27,Tropical and West Equatorial Atlantic,TRUE
+-12.25,-4.04919,4,0,28,Guinea Basin and East Equatorial Atlantic,TRUE
+-6.75,0.45423,1,0,28,Guinea Basin and East Equatorial Atlantic,TRUE
+-0.75,-17.30799,1,0,27,Tropical and West Equatorial Atlantic,TRUE
+2.25,-15.7433,1,0,27,Tropical and West Equatorial Atlantic,TRUE
+3.25,-15.22446,1,0,27,Tropical and West Equatorial Atlantic,TRUE
+5.25,-25.92132,1,0,30,South Atlantic,TRUE
+5.75,-25.92132,2,0,30,South Atlantic,TRUE
+5.75,-14.19056,1,0,27,Tropical and West Equatorial Atlantic,TRUE
+6.25,-25.92132,5,0,30,South Atlantic,TRUE
+6.25,-25.36668,6,0,27,Tropical and West Equatorial Atlantic,TRUE
+6.25,-24.81457,4,0,27,Tropical and West Equatorial Atlantic,TRUE
+6.75,-24.81457,1,0,27,Tropical and West Equatorial Atlantic,TRUE
+7.25,0.45423,1,0,28,Guinea Basin and East Equatorial Atlantic,TRUE
+7.75,-5.05237,1,0,28,Guinea Basin and East Equatorial Atlantic,TRUE
+8.25,-23.17261,4,0,29,Benguela Upwelling,TRUE
+8.25,-12.64839,2,0,27,Tropical and West Equatorial Atlantic,TRUE
+8.75,-5.05237,5,0,28,Guinea Basin and East Equatorial Atlantic,TRUE
+8.75,-2.04623,1,0,28,Guinea Basin and East Equatorial Atlantic,TRUE
+10.25,-7.06373,1,0,28,Guinea Basin and East Equatorial Atlantic,TRUE
+10.75,-7.06373,1,0,28,Guinea Basin and East Equatorial Atlantic,TRUE
+11.25,-18.3585,1,0,29,Benguela Upwelling,TRUE
+11.25,-5.05237,2,0,28,Guinea Basin and East Equatorial Atlantic,TRUE
+11.75,-21.01396,1,0,29,Benguela Upwelling,TRUE
+11.75,-19.94646,1,0,29,Benguela Upwelling,TRUE
+12.25,-21.01396,1,0,29,Benguela Upwelling,TRUE
+12.75,-23.17261,4,0,29,Benguela Upwelling,TRUE
+12.75,-22.62982,1,0,29,Benguela Upwelling,TRUE
+13.75,-27.03856,1,0,29,Benguela Upwelling,TRUE
+14.25,-28.73574,1,0,29,Benguela Upwelling,TRUE
+30.75,-30.46095,1,0.29275,20,Agulhas Current,NA
+97.25,-10.09808,1,0,17,Northern Indian Ocean,NA
