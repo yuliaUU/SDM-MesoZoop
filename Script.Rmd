@@ -5,8 +5,6 @@ date: '2022-07-15'
 ---
 
 ```{r lib, message=FALSE, warning=FALSE, paged.print=FALSE}
-#library(foreach)
-#library(doParallel)
 library(readr)
 library(dplyr)
 library(ggpubr)
@@ -20,7 +18,7 @@ library(janitor)
 library(tidyr)
 library(dplyr)
 library(tidyverse)
-library(sf)      # for spTransform() & project()
+library(sf)      
 library(data.table)
 library(biscale)
 library(cowplot)
@@ -175,7 +173,7 @@ plotHSI_NR <- plot.map(ENSEMBLE_HSI.wmean.tot_NR[,c("longitude","latitude","tota
 (plotHSI_UR+ theme(legend.position="none")) / plotHSI_NR+ 
   plot_annotation(tag_levels = 'a',tag_prefi="(", tag_suffix=")")+
   plot_layout(guides = 'collect')
-ggsave("img/Fig.4-mapHSI_URvsNR.png", width=29.7, height=28, units="cm", dpi=300)
+ggsave("img/JBI-23-0415_Fig4.png", width=29.7, height=28, units="cm", dpi=600)
 ```
 
 
@@ -235,7 +233,7 @@ mes.prov_plt / hsiFR_NR+
   plot_annotation(tag_levels = 'A')& 
   theme(plot.tag = element_text("Times New Roman",face = "bold", size = 12,hjust = -3, vjust = 0))
 
-ggsave("img/Fig.S8-HSI-FR_NR.png", width=22, height=25, units="cm", dpi=300)
+ggsave("img/JBI-23-0415_FigS8.png", width=22, height=25, units="cm", dpi=600)
 
 ```
 
@@ -262,7 +260,7 @@ ggboxplot(eval.sp ,x = "Model", y = "Testing.data",order=order,
   geom_hline(yintercept=0.6, color="grey", linetype="dashed")+
   theme(legend.position = "none")+
   labs(y="Score")
-ggsave("img/Fig.S5-AUC_vs_TSS.png", width=20, height=12, units="cm", dpi=300)
+ggsave("img/JBI-23-0415_FigS5.png", width=20, height=12, units="cm", dpi=600)
 ```
 
 ### Failed Models
@@ -341,7 +339,7 @@ ggerrorplot(eval ,x = "Model", y = "Testing.data",order=order,
   geom_hline(yintercept=0.6, color="grey", linetype="dashed")+
   theme(legend.position = "none")+  theme_Publication()+  panel_border()+ theme(legend.position = "none")
 
-ggsave("img/Fig.2-AUC_vs_model.png", width=20, height=18, units="cm", dpi=300)
+ggsave("img/JBI-23-0415_Fig2.png", width=20, height=18, units="cm", dpi=600)
 ```
 
 
@@ -548,7 +546,7 @@ plot_grid(plot.PA1 +theme(legend.position = "none"),
           plot.RUN2, ncol=2,labels = c('(a)', '(b)', "(c)", '(d)'), 
           rel_widths = c(1.5, 2)
           )
-ggsave("img/Fig.3-PA_vs_RUN.png", width=29, height=16, units="cm", dpi=300)
+ggsave("img/JBI-23-0415_Fig3.png", width=29, height=16, units="cm", dpi=600)
 ```
 
 
@@ -577,7 +575,7 @@ varimp.plt<- ggerrorplot(varimp,x = "Expl.var", y = "Var.imp",order=order,
   labs(y="Variable Importance", x="Environmental Variable")
 
 varimp.plt
-ggsave("img/Fig.S7-VarImp.png", width=16, height=16, units="cm", dpi=300)
+ggsave("img/JBI-23-0415_FigS7.png", width=16, height=16, units="cm", dpi=600)
 ```
 
 
@@ -594,28 +592,10 @@ META_zoop |> select(SPID, Nocc) |> mutate(file= glue::glue("SPID_{SPID}.txt")) |
   labs(y="Time, minutes", x=" Number of occurences")+
   scale_x_continuous(breaks = scales::pretty_breaks(n = 7))
 
-ggsave("img/Fig.S6-time.png", width=15, height=10, units="cm", dpi=300)
+ggsave("img/JBI-23-0415_FigS6.png", width=15, height=10, units="cm", dpi=600)
 ```
 
 
-```{r}
-mean(log.time$time/60, na.rm=TRUE)
-sd(log.time$time/60, na.rm=TRUE)
-range(log.time$time/60, na.rm=TRUE)
-```
-
-```{r}
-log.time<- read_csv("data/ENSEMBLE_NR/log_timeNR.csv")
-
-META_zoop |> select(SPID, Nocc) |> mutate(file= glue::glue("SPID_{SPID}.txt")) |>  right_join(log.time) |> 
-  ggplot()+
-  geom_point(aes(x=Nocc, y=time/60))+
-  theme_Publication()+
-  labs(y="Time, minutes", x=" Number of occurences")+
-  scale_x_continuous(breaks = scales::pretty_breaks(n = 7))
-
-ggsave("img/timeNR.png", width=15, height=10, units="cm", dpi=300)
-```
 ```{r}
 mean(log.time$time/60, na.rm=TRUE)
 sd(log.time$time/60, na.rm=TRUE)
@@ -653,7 +633,7 @@ plot.map(MESO |> select(longitude,latitude, Zeu))+labs(color="Zeu"),
 plot.map(MESO |> select(longitude,latitude, NPP))+labs(color="NPP"), labels = "AUTO", ncol = 2
 )
 
-ggsave("img/Fig.S2-mapENV_MESO.png", width=29.7, height=25, units="cm", dpi=300)
+ggsave("img/JBI-23-0415_FigS2.png", width=29.7, height=25, units="cm", dpi=600)
 ```
 ```{r Fig.S3, fig.height=10, fig.width=11}
 #BOTH
@@ -668,7 +648,7 @@ plot.map(BOTH |> select(longitude,latitude, NPP))+labs(color="NPP"), labels = "A
 )
 
 
-ggsave("img/Fig.S3-mapENV_BOTH.png", width=29.7, height=25, units="cm", dpi=300)
+ggsave("img/JBI-23-0415_FigS3.png", width=29.7, height=25, units="cm", dpi=600)
 ```
 ```{r}
 # mat : is a matrix of data
@@ -696,9 +676,9 @@ env.both=BOTH|> select(ends_with("mean"),Zeu,NPP)|> drop_na()
 ```
 
 
-```{r Fig.S4, fig.height=6, fig.width=10}
+```{r Fig.S4, fig.height=3, fig.width=10}
 # Define the output file
-png("img/Fig.S4-corrplots.png", width=10, height=8,units = "in",res=300)
+png("img/JBI-23-0415_FigS4.png", width=10, height=8,units = "in",res=600)
 # Set up a 2x2 plotting area
 par(mfrow=c(2,2))
 
@@ -749,7 +729,7 @@ plot.map(effort |> select(longitude,latitude, total_occ1))+
   )
 
 
-ggsave("img/Fig.S9-smpling-effort.png", width=29.7, height=14, units="cm", dpi=300)
+ggsave("img/JBI-23-0415_FigS9.png", width=29.7, height=14, units="cm", dpi=600)
 ```
 # Missing Info
 ```{r Fig.S1}
@@ -757,7 +737,7 @@ META <- read_csv("data/META_all.csv",show_col_types=FALSE)
 library(naniar)
 gg_miss_var(META |> select(-c(SPID,FILE, AphiaID, AcceptedSciName, kingdom:species)))+theme_Publication()
 
-ggsave("img/Fig.S1-missing_info.png", width=10, height=5, units="in", dpi=300)
+ggsave("img/JBI-23-0415_FigS1.png", width=10, height=5, units="in", dpi=600)
 ```
 ## ENSEMBLE UR and NR
 

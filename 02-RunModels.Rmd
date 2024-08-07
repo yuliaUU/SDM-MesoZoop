@@ -12,11 +12,9 @@ library(tidyverse)
 `%notin%` <- Negate(`%in%`)
 # custom functions
 path<-  here::here()
-META_zoop <- read_csv(paste0(path,"data/META_zoop.csv"),show_col_types=FALSE)
+META_zoop <- read_csv(paste0("data/META_zoop_example.csv"),show_col_types=FALSE)
 ```
-```{r}
-META_zoop |> tabyl(Env)
-```
+
 
 #UR
 ```{r}
@@ -32,17 +30,8 @@ files
 ```
 
 ```{r}
-#files <- META_zoop |>  filter(ModelStatus =="SDM",  Env %in% c("BOTH", "MESO")) |> pull(SPID)
-
-numCores<- detectCores()
-# Detect the number of available cores and create cluster
-#cl <- parallel::makeCluster(numCores)
-# Detect the number of available cores and create cluster
-# Activate cluster for foreach library
-doParallel::registerDoParallel(numCores)
-foreach (i=1:length(files)) %dopar% {
 library(readr)
-library(nppen)
+library(nppen)#devtools::install_github("jiho/nppen")
 library(biomod2)
 library(dplyr)
 library(glue)
@@ -51,7 +40,7 @@ library(sp)
 library(pROC)
 library(tidyr)
 library(glue)
-library(aquamean)
+library(aquamean)#devtools::install_github("yuliaUU/aquamean")
 library(stringr)
 library(dplyr)
 library(tictoc)
@@ -64,14 +53,13 @@ filter=dplyr::filter
 summarize=dplyr::summarize
 count=dplyr::count
 group_by=dplyr::group_by
-sink(glue("E:/log/SPID_{files[i]}.txt"), append=T)
-print(glue::glue("JOB SPID#{files[i]}: {META_zoop$name[META_zoop$SPID==files[i]]} started"))
+sink(glue("E:/log/SPID_{files}.txt"), append=T)
+print(glue::glue("JOB SPID#{files}: {META_zoop$name[META_zoop$SPID==files]} started"))
 tic()
 print(glue::glue("loading data"))
 # loading data
-path<-  here::here() # path to variables
-META_zoop <- read_csv(paste0(path,"data/META_zoop_example.csv"),show_col_types=FALSE) # load metafile
-load(paste0(path,"data/ENV.RData"))# load environmental data: 3 files MESO, EPI, BOTH
+META_zoop <- read_csv(paste0("data/META_zoop_example.csv"),show_col_types=FALSE) # load metafile
+load(paste0("data/ENV.RData"))# load environmental data: 3 files MESO, EPI, BOTH
 # Paths to save outputs into
 path_to_maxent=paste0(path,"maxent.jar")
 path_to_occ= paste0(path,'data/occurance_gridded')
